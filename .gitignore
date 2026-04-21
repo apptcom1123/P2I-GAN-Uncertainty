@@ -14,6 +14,8 @@ dist/
 .mypy_cache/
 .ruff_cache/
 .cache/
+.mpl-cache/
+.uv-cache/
 .ipynb_checkpoints
 mlruns/
 experiments/results/

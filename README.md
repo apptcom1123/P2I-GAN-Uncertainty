@@ -1,9 +1,24 @@
 
 
-## Points to images: deep-learning enhanced spatial-temporal rainfall modeling from point measurements.
+## P2IGAN-MU : Mixture-of-Experts-Modulated Uncertainty-Aware GAN for Diverse and Reliable Spatio-Temporal Interpolation
 
-P2I-GAN is a deep generative framework that treats rainfall interpolation as a video inpainting task, enabling reconstruction of spatio-temporal rainfall fields from highly sparse and irregular rain-gauge observations.
-This repository provides training scripts, data preprocessing workflows, visualization tools, and evaluation utilities so researchers can rapidly experiment with point-to-image reconstruction using an open-source benchmark.
+
+This branch is now centered on uncertainty-aware spatio-temporal interpolation rather than the original GAN-vs-baseline benchmark workflow.
+The current implementation keeps the P2IGAN interpolation backbone, adds a heteroscedastic uncertainty head, uses Monte Carlo dropout sampling to estimate epistemic uncertainty, and restores adversarial training only on the reconstructed interpolation result.
+Inference now exports:
+
+- predictive mean
+- aleatoric standard deviation
+- epistemic standard deviation
+- total predictive standard deviation
+- correlated ensemble members
+
+This is conceptually related with the DEUCE paper, but adapted for interpolation. The running method is not a full variational-inference Bayesian neural network. It is an engineering-stable approximation based on:
+
+- heteroscedastic mean / log-variance prediction
+- MC-dropout stochastic forward sampling
+- discriminator supervision only on reconstructed mean sequences
+- optional expert-modulated decoder upsampling via `UPPosMod`
 
 ⭐ If P2IGAN is helpful to your projects, please help star this repo. Thanks! 🤗
 
@@ -12,35 +27,16 @@ This repository provides training scripts, data preprocessing workflows, visuali
 </div>
 
 ## Update
-- **2026.02.10**: Our code and model are publicly available. 🐳 
-- **2025.12.24**: The training pipelines are updated.
-- **2025.12.06**: This repo is created.
+- **2026.04.22**: switched the uncertainty branch to a stable interpolation-oriented pipeline with heteroscedastic uncertainty, MC dropout, multi-sample discriminator updates, MLflow logging, and optional `UPPosMod` expert modulation.
 
 
 ### TODO
-- [ ] make model output with emsemble.
-- [ ] make model output with KAN
-- [ ] make model output with DEUCE v1.0 framework (for uncertainty)
-
-
-## Results
-
-#### 👨🏻‍🎨 Radar-Input
-
-<img src="assets/comparison_event_04.gif">
-
-<img src="assets/comparison_event_05.gif">
-
-#### 🎨 Gauge Input
-
-<img src="assets/gauge_event_03.gif">
-
-<img src="assets/gauge_event_07.gif">
-
-
-
-## Overview
-![overall_structure](assets/P2IGAN_pipeline.png)
+- [x] make model output with ensemble.
+- [x] make model output uncertainty decomposition.
+- [x] restore discriminator training on reconstruction only.
+- [x] support modulation-based decoder upsampling with configurable experts.
+- [ ] improve calibration and stabilize predicted aleatoric variance.
+- [ ] revisit full variational inference once the custom DOConv backbone is made compatible.
 
 
 ## Dependencies and Installation
@@ -70,6 +66,8 @@ This repository provides training scripts, data preprocessing workflows, visuali
    ```
  
 ## Get Started
+
+
 ### Prepare pretrained models
 Download our pretrained models from [Releases V0.1.0](https://drive.google.com/file/d/1oPkmll4_5NlkVTdDr57Bhr4UbWi-Fruw/view?usp=drive_link)
 
@@ -90,161 +88,68 @@ python scripts/infer.py \
   --experiment-name p2igan-eval-fakedata
 ```
 
-## Dataset Preparation
-
-The training and testing datasets are stored in **separate directories**, each containing HDF5 (`.h5`) files.  
-Each HDF5 file represents a single event with the following shape:
-
-```
-(H, W, T) = (128, 128, 16)
-```
-
-In our experiments, the data sources include **Nimrod (radar)** and **MIDAS (rain gauge)**.  
-Users should replace these with their own datasets following the same format.
-
----
-
-## HDF5 Directory Structure
-
-```
-datasets
-├── train
-│   ├── 201601011320.h5
-│   ├── 201601020600.h5
-│
-├── test
-│   ├── 201601010000.h5
-│   ├── 201601010320.h5
-│
-├── test_events
-│   ├── event1.h5
-│   ├── event2.h5
-```
-
-Each `.h5` file must contain a dataset named `frames` with shape `(T, H, W)` or `(H, W, T)` that can be reshaped accordingly.
-
----
-
-## Zarr-Based Dataset (Optional)
-
-This project also supports **Zarr-based datasets**, which are recommended for large-scale radar or gauge data and long time series training.
-
-Compared with HDF5, Zarr provides:
-- Chunked storage
-- Partial I/O
-- Better scalability for sliding-window training
-
-The Zarr format is fully compatible with the provided `Dataset` and `Dataset_ZarrTrain` implementations.
-
----
-
-## Zarr Directory Structure
-
-```
-datasets
-├── train.zarr
-│   ├── events
-│   │   ├── 20160101
-│   │   │   └── frames        # (T, H, W), uint8
-│   │   ├── 20160102
-│   │   │   └── frames
-│   │
-│   ├── index
-│   │   └── windows           # (N, 3) -> [event_id, start_t, length]
-│   │
-│   └── .zattrs
-│
-├── test.zarr
-│   ├── events
-│   │   ├── event1
-│   │   │   └── frames
-│   │   ├── event2
-│   │   │   └── frames
-│   │
-│   ├── index
-│   │   └── windows
-│   │
-│   └── .zattrs
-```
-
-
----
-
-## Zarr Data Conventions
-
-- **frames**
-  - Shape: `(T, H, W)`
-  - Data type: `uint8`
-  - Values are scaled to `[0, 255]` before storage
-
-- **index/windows**
-  - Shape: `(N, 3)`
-  - Format: `[event_id, start_t, length]`
-  - Defines temporal windows for training or evaluation
-
-- Training and testing datasets are stored in **independent Zarr roots**
-  - `train.zarr`
-  - `test.zarr`
-
----
-
-## Zarr Attributes
-
-Stored in `.zattrs` at the root level:
-
-```json
-{
-  "suggested_window": 20,
-  "description": "Radar / gauge rainfall sequences for spatio-temporal interpolation and nowcasting"
-}
-```
-
-The `suggested_window` attribute is used by `Dataset_ZarrTrain` as the default temporal window length.
-
-
 ## Training
-Our training configures are provided in [`p2igan_baseline.json`](./p2igan_bench/configs/p2igan_baseline.json) 
+The uncertainty-oriented config is provided in [`p2igan_uncertainty.json`](./p2igan_bench/config/p2igan_uncertainty.json).
 
+### Current training behavior
+The current training loop is centered on [`scripts/train.py`](./scripts/train.py) and behaves as follows:
+
+- The generator outputs `mean` and `logvar`.
+- `mean` is the reconstructed interpolation sequence.
+- `logvar` is used by the heteroscedastic Gaussian negative log-likelihood to learn aleatoric uncertainty.
+- MC dropout remains active during stochastic sampling, so repeated forward passes produce multiple predictions for epistemic estimation.
+- The discriminator only sees `mean prediction` versus `ground-truth sequence`. It does not see aleatoric maps, epistemic maps, or predictive std maps.
+- The discriminator is updated with multi-sample fake sequences. For one batch, `sample_count` stochastic predictions are generated, each fake-vs-real discriminator loss is computed independently, and the discriminator loss is averaged before the optimizer step.
+- The generator is trained with `reconstruction loss + adversarial loss`, where adversarial supervision is applied only to the reconstructed mean sequence.
+
+### Decoder modulation
+If `model.mod = true`, the mean decoder switches from `UPPos` to `UPPosMod`.
+
+- `x8` is flattened and passed through a 4-layer MLP to produce `(B, 3 * number_of_experts)`.
+- A uniform random noise tensor in `[-1, 1]` is added with strength `model.mod_noise_rate`.
+- The resulting gate vector is split into three parts and passed to the three decoder upsampling blocks.
+- Each `UPPosMod` maintains an expert bank of learnable positional tensors and mixes them with the gate weights to produce the modulation used in `x = x + x * pos`.
+- At the moment, this modulation path is applied to the `mean_decoder` only. The `logvar_decoder` remains on the original `UPPos` path for stability.
+
+### Important config flags
+The most important knobs in [`p2igan_uncertainty.json`](./p2igan_bench/config/p2igan_uncertainty.json) are:
+
+- `uncertainty.train_samples`: number of stochastic forward passes per training batch
+- `uncertainty.val_samples`: number of stochastic forward passes per validation batch
+- `uncertainty.predict_samples`: number of MC samples used during inference
+- `uncertainty.ensemble_size`: number of exported ensemble members
+- `loss.adversarial_weight`: generator adversarial loss weight
+- `discriminator.enabled`: whether the discriminator branch is used
+- `model.mod`: whether to enable `UPPosMod`
+- `model.mod_noise_rate`: noise strength for the modulation gate
+- `model.number_of_experts`: number of positional experts per modulation block
+
+### Logging and visualization
+Training now records MLflow metrics and artifacts:
+
+- step losses for total / reconstruction / generator adversarial / discriminator
+- epoch losses for train and validation
+- generator and discriminator learning rates
+- latest and best checkpoints
+- visualization artifacts containing masked input, target, predictive mean, aleatoric std, and epistemic std
+
+### Commands
 Run one of the following commands for training:
 ```shell
- # For training P2IGAN
- python scripts/train.py --config p2igan_bench/config/p2igan_gan_baseline.json
- 
- # For monitoring in mlflow
- mlflow ui --backend-store-uri file:<project_path>/mlruns --port 5000
+# Train uncertainty-aware interpolation model
+python scripts/train.py --config p2igan_bench/config/p2igan_uncertainty.json
 
-  # For infer P2IGAN
- python scripts/infer.py --config p2igan_bench/config/p2igan_gan_baseline.json
+# Export predictive mean / std maps / ensemble members
+python scripts/infer.py \
+  --config p2igan_bench/config/p2igan_uncertainty.json \
+  --checkpoint weights/p2igan_uncertainty/best.pt \
+  --overwrite
 
 ```
-<!-- 
-python scripts/infer.py   --config p2igan_bench/config/p2igan_ganwopos_baseline.json   --output /home/NAS/homes/brick-10015/P2I-GAN-benchmark/datasets/infer/p2iganwopos_nimrod.zarr   --overwrite
 
-python scripts/infer.py   --config p2igan_bench/config/p2igan_ganwopos_baseline_gauge.json   --output /home/NAS/homes/brick-10015/P2I-GAN-benchmark/datasets/infer/p2iganwopos_gauge.zarr   --overwrite -->
-
-## Evaluation
-Run one of the following commands for evaluation:
-```shell
- # For evaluating flow completion model
- cd experiments
- python -m experiments.main
-```
 ## License
 This project is licensed under the MIT License — see the LICENSE file for details.
 
-## Citation
-```
-@software{wang2026p2igan,
-  author       = {Wang, Bing-Zhang and Wang, Li-Pen},
-  title        = {P2I-GAN Benchmark: Deep Generative Framework for Spatio-Temporal Rainfall Reconstruction from Sparse Gauges},
-  year         = {2026},
-  version      = {0.1.0},
-  publisher    = {Zenodo},
-  doi          = {10.5281/zenodo.18623976},
-  url          = {https://github.com/NTU-CompHydroMet-Lab/P2I-GAN-benchmark}
-}
-```
 
 ## Contact
 If you have any questions about the technical issues, please feel free to reach me out at r13521608@caece.net. 
-

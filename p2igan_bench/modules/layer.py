@@ -398,6 +398,36 @@ class UPPos(nn.Module):
         x = self.proj(x)
         return F.relu(x, inplace=True)
 
+
+class UPPosMod(nn.Module):
+    def __init__(self, in_ch, out_ch, T, H, W, number_of_experts: int):
+        super().__init__()
+        self.T = T
+        self.in_ch = in_ch
+        self.number_of_experts = int(number_of_experts)
+        self.pos = nn.Parameter(torch.zeros(self.number_of_experts, in_ch, H, W))
+        self.up = nn.Upsample(scale_factor=2, mode="bilinear", align_corners=True)
+        self.proj = nn.Conv2d(in_ch, out_ch, kernel_size=1, bias=True)
+
+    def forward(self, x, gate):
+        x = self.up(x)
+        pos = 2 * torch.sigmoid(self.pos) - 1
+
+        if gate.dim() != 2 or gate.size(1) != self.number_of_experts:
+            raise ValueError(
+                f"gate must have shape (B, {self.number_of_experts}), got {tuple(gate.shape)}"
+            )
+
+        weights = torch.softmax(gate, dim=-1)
+        total_pos = torch.sum(
+            pos.unsqueeze(0) * weights.unsqueeze(-1).unsqueeze(-1).unsqueeze(-1),
+            dim=1,
+        )
+        total_pos = torch.tanh(total_pos)
+        x = x + x * total_pos
+        x = self.proj(x)
+        return F.relu(x, inplace=True)
+
 class UP(nn.Module):
     def __init__(self, in_ch, out_ch, T, H, W):
         super().__init__()
@@ -435,6 +465,7 @@ __all__ = [
     "STABEDBlock",
     "InputBlock",
     "UPPos",
+    "UPPosMod",
     "C2",
     "C3",
 ]
