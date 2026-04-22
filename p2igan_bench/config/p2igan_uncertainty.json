@@ -106,6 +106,7 @@
     "visualize_timesteps": 4,
     "iterations": 200000,
     "max_epochs": 500,
+    "auto_resume": true,
     "use_validation": true
   }
 }

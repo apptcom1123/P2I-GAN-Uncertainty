@@ -2,7 +2,6 @@
 
 from .losses import ReconstructionLoss, gan_loss
 from .uncertainty import (
-    GaussianScaleMixture,
     enable_mc_dropout,
     generate_ensemble_from_uncertainty,
     heteroscedastic_gaussian_nll,
@@ -13,7 +12,6 @@ from .uncertainty import (
 __all__ = [
     "ReconstructionLoss",
     "gan_loss",
-    "GaussianScaleMixture",
     "enable_mc_dropout",
     "generate_ensemble_from_uncertainty",
     "heteroscedastic_gaussian_nll",

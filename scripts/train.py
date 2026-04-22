@@ -124,10 +124,14 @@ class UncertaintyInterpolationTrainer:
         self.use_validation = bool(cfg["train"].get("use_validation", True))
         self.save_dir = Path(cfg.get("save_dir", "weights/p2igan_uncertainty"))
         self.save_dir.mkdir(parents=True, exist_ok=True)
+        self.latest_checkpoint_path = self.save_dir / "latest.pt"
+        self.best_checkpoint_path = self.save_dir / "best.pt"
         self.artifact_dir = self.save_dir / "artifacts"
         self.artifact_dir.mkdir(parents=True, exist_ok=True)
         self.best_val_loss = float("inf")
         self.global_step = 0
+        self.start_epoch = 1
+        self.auto_resume = bool(cfg["train"].get("auto_resume", True))
         self.visualize_every = int(cfg["train"].get("visualize_every", 1))
         self.visualize_samples = int(cfg["train"].get("visualize_samples", 1))
         self.visualize_timesteps = int(cfg["train"].get("visualize_timesteps", 4))
@@ -135,6 +139,9 @@ class UncertaintyInterpolationTrainer:
         self.tracking_uri = cfg.get("mlflow", {}).get("tracking_uri") or cfg.get("tracking_uri")
         self.experiment_name = cfg.get("mlflow", {}).get("experiment_name") or cfg.get("experiment_name")
         self.run_name = cfg.get("mlflow", {}).get("run_name") or cfg.get("run_name")
+
+        if self.auto_resume:
+            self._auto_resume_if_available()
 
     def _forward_raw(self, masked_frames: torch.Tensor, masks: torch.Tensor) -> torch.Tensor:
         return self.network(masked_frames, masks)
@@ -204,11 +211,11 @@ class UncertaintyInterpolationTrainer:
             return torch.zeros((), device=frames.device, dtype=frames.dtype)
 
         disc_loss = torch.zeros((), device=frames.device, dtype=frames.dtype)
-        with torch.no_grad():
-            for _ in range(sample_count):
+        for _ in range(sample_count):
+            with torch.no_grad():
                 raw_disc = self._forward_raw(masked_frames, masks)
                 fake_prediction = raw_disc[..., 0]
-                disc_loss = disc_loss + self._discriminator_loss(frames, fake_prediction)
+            disc_loss = disc_loss + self._discriminator_loss(frames, fake_prediction)
         return disc_loss / float(sample_count)
 
     def _sample_predictions(self, masked_frames: torch.Tensor, masks: torch.Tensor, sample_count: int) -> torch.Tensor:
@@ -386,6 +393,7 @@ class UncertaintyInterpolationTrainer:
             {
                 "epoch": epoch,
                 "global_step": self.global_step,
+                "best_val_loss": self.best_val_loss,
                 "config": self.cfg,
                 "network": self.network.state_dict(),
                 "optimizer": self.optimizer.state_dict(),
@@ -393,6 +401,36 @@ class UncertaintyInterpolationTrainer:
                 "disc_optimizer": self.disc_optimizer.state_dict() if self.disc_optimizer is not None else None,
             },
             path,
+        )
+
+    def _auto_resume_if_available(self) -> None:
+        if not self.latest_checkpoint_path.exists():
+            return
+
+        checkpoint = torch.load(self.latest_checkpoint_path, map_location=self.device, weights_only=False)
+        self.network.load_state_dict(checkpoint["network"])
+        self.optimizer.load_state_dict(checkpoint["optimizer"])
+
+        discriminator_state = checkpoint.get("discriminator")
+        if self.discriminator is not None and discriminator_state is not None:
+            self.discriminator.load_state_dict(discriminator_state)
+
+        disc_optimizer_state = checkpoint.get("disc_optimizer")
+        if self.disc_optimizer is not None and disc_optimizer_state is not None:
+            self.disc_optimizer.load_state_dict(disc_optimizer_state)
+
+        self.global_step = int(checkpoint.get("global_step", 0))
+        self.best_val_loss = float(checkpoint.get("best_val_loss", float("inf")))
+        last_epoch = int(checkpoint.get("epoch", 0))
+        self.start_epoch = last_epoch + 1
+
+        logging.info(
+            "Resumed from %s (epoch=%d, next_epoch=%d, global_step=%d, best_val_loss=%.6f)",
+            self.latest_checkpoint_path,
+            last_epoch,
+            self.start_epoch,
+            self.global_step,
+            self.best_val_loss,
         )
 
     def train(self) -> None:
@@ -406,7 +444,15 @@ class UncertaintyInterpolationTrainer:
             if mlflow.active_run() is not None:
                 mlflow.log_params(flatten_dict(self.cfg))
 
-            for epoch in range(1, self.max_epochs + 1):
+            if self.start_epoch > self.max_epochs:
+                logging.info(
+                    "Checkpoint already reached max_epochs (start_epoch=%d, max_epochs=%d). Nothing to do.",
+                    self.start_epoch,
+                    self.max_epochs,
+                )
+                return
+
+            for epoch in range(self.start_epoch, self.max_epochs + 1):
                 train_metrics = self._run_loader(self.train_loader, training=True, sample_count=self.train_samples)
                 logging.info(
                     "epoch=%d train_loss=%.6f recon=%.6f gen_adv=%.6f disc=%.6f",
@@ -416,8 +462,7 @@ class UncertaintyInterpolationTrainer:
                     train_metrics["gen_adv_loss"],
                     train_metrics["disc_loss"],
                 )
-                latest_path = self.save_dir / "latest.pt"
-                self._save_checkpoint(epoch, latest_path)
+                self._save_checkpoint(epoch, self.latest_checkpoint_path)
 
                 if self.use_validation and self.val_loader is not None:
                     with torch.no_grad():
@@ -444,15 +489,14 @@ class UncertaintyInterpolationTrainer:
                     mlflow.log_metric("train/lr", float(self.optimizer.param_groups[0]["lr"]), step=epoch)
                     if self.disc_optimizer is not None:
                         mlflow.log_metric("train/disc_lr", float(self.disc_optimizer.param_groups[0]["lr"]), step=epoch)
-                    mlflow.log_artifact(str(latest_path), artifact_path="checkpoints")
+                    mlflow.log_artifact(str(self.latest_checkpoint_path), artifact_path="checkpoints")
 
                 if val_metrics["loss"] < self.best_val_loss:
                     self.best_val_loss = val_metrics["loss"]
-                    best_path = self.save_dir / "best.pt"
-                    self._save_checkpoint(epoch, best_path)
+                    self._save_checkpoint(epoch, self.best_checkpoint_path)
                     if mlflow.active_run() is not None:
                         mlflow.log_metric("valid/best_loss", self.best_val_loss, step=epoch)
-                        mlflow.log_artifact(str(best_path), artifact_path="checkpoints")
+                        mlflow.log_artifact(str(self.best_checkpoint_path), artifact_path="checkpoints")
 
                 if epoch % self.visualize_every == 0:
                     self._log_visualization(self.train_loader, epoch, prefix="train")

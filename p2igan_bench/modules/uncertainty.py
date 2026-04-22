@@ -7,7 +7,6 @@ from typing import Dict
 
 import torch
 import torch.nn as nn
-import pyro.distributions as dist
 
 
 def heteroscedastic_gaussian_nll(
@@ -63,10 +62,6 @@ def kl_weight_blundell(num_batches: int, batch_idx: int, **_: int) -> float:
         return 2 ** (num_batches - batch_idx - 1) / (2 ** num_batches - 1)
     except OverflowError:
         return 0.0
-
-
-class GaussianScaleMixture(torch.distributions.MixtureSameFamily, dist.torch_distribution.TorchDistributionMixin):
-    pass
 
 
 def match_kl_weight(name: str):
