@@ -30,18 +30,20 @@ class EBlock(nn.Module):
 class _ExpertGateMLP(nn.Module):
     def __init__(self, output_dim: int, hidden_dim: int) -> None:
         super().__init__()
+        self.pool = nn.AdaptiveAvgPool2d(1)
         self.net = nn.Sequential(
             nn.Flatten(),
             nn.LazyLinear(hidden_dim),
             nn.ReLU(inplace=True),
             nn.Linear(hidden_dim, hidden_dim),
             nn.ReLU(inplace=True),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.ReLU(inplace=True),
             nn.Linear(hidden_dim, output_dim),
         )
+        nn.init.zeros_(self.net[-1].bias)
+        nn.init.normal_(self.net[-1].weight, mean=0.0, std=1e-3)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = self.pool(x)
         return self.net(x)
 
 

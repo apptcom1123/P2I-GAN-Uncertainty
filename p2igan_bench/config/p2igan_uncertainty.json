@@ -1,14 +1,14 @@
 {
   "seed": 2024,
   "device": "cuda:0",
-  "save_dir": "weights/p2igan_uncertainty",
-  "experiment_name": "p2igan-uncertainty",
+  "save_dir": "weights/p2igan_uncertainty_v4",
+  "experiment_name": "p2igan-uncertaint-v4",
   "run_name": "p2igan-uncertainty-gan",
-  "description": "P2IGAN uncertainty interpolation with heteroscedastic aleatoric uncertainty, MC-dropout epistemic uncertainty, and discriminator-guided reconstruction detail.",
+  "description": "Adjust deterministic term. test without comod and discriminator.",
   "mlflow": {
     "enabled": true,
     "tracking_uri": null,
-    "experiment_name": "p2igan-uncertainty",
+    "experiment_name": "p2igan-uncertaint-v4",
     "run_name": "p2igan-uncertainty-gan"
   },
   "model": {
@@ -18,13 +18,13 @@
     "base_channels": 64,
     "mc_dropout_rate": 0.10,
     "output_activation": "sigmoid",
-    "mod": true,
+    "mod": false,
     "mod_noise_rate": 0.0,
     "number_of_experts": 6,
     "mod_hidden_dim": 128
   },
   "discriminator": {
-    "enabled": true,
+    "enabled": false,
     "name": "p2igan",
     "in_channels": 1,
     "sample_length": 16,
@@ -64,7 +64,10 @@
   },
   "loss": {
     "beta": 0.0,
-    "adversarial_weight": 0.01,
+    "lambda_w": 2.0,
+    "lambda_pm": 0.00,
+    "pm_omega": 10.0,
+    "lambda_adv": 0.00,
     "gan_loss": "hinge",
     "target_real_label": 1.0,
     "target_fake_label": 0.0,
@@ -72,7 +75,7 @@
     "logvar_clamp_max": 8.0
   },
   "uncertainty": {
-    "train_samples": 2,
+    "train_samples": 4,
     "val_samples": 2,
     "predict_samples": 16,
     "ensemble_size": 48,

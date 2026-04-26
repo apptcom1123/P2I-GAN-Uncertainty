@@ -17,6 +17,7 @@ from torchvision.utils import make_grid, save_image
 from p2igan_bench.data.dataloader import P2IDataModule
 from p2igan_bench.models import build_discriminator, build_generator
 from p2igan_bench.modules import enable_mc_dropout, gan_loss, heteroscedastic_gaussian_nll, summarize_uncertainty
+from p2igan_bench.modules.losses import pm_loss, weighted_l1_distance
 
 
 def parse_args() -> argparse.Namespace:
@@ -114,11 +115,14 @@ class UncertaintyInterpolationTrainer:
         self.train_samples = int(uncertainty_cfg.get("train_samples", 2))
         self.val_samples = int(uncertainty_cfg.get("val_samples", self.train_samples))
         self.loss_beta = float(loss_cfg.get("beta", 0.0))
-        self.adv_weight = float(loss_cfg.get("adversarial_weight", 0.0))
+        self.lambda_w = float(loss_cfg.get("lambda_w", loss_cfg.get("weighted_l1_weight", 0.0)))
+        self.lambda_pm = float(loss_cfg.get("lambda_pm", 0.0))
+        self.pm_omega = float(loss_cfg.get("pm_omega", loss_cfg.get("pm_weight", 10.0)))
+        self.lambda_adv = float(loss_cfg.get("lambda_adv", loss_cfg.get("adversarial_weight", 0.0)))
         self.gan_loss_type = str(loss_cfg.get("gan_loss", "hinge")).lower()
         self.target_real_label = float(loss_cfg.get("target_real_label", 1.0))
         self.target_fake_label = float(loss_cfg.get("target_fake_label", 0.0))
-        self.use_adversarial = self.use_discriminator and self.adv_weight > 0.0
+        self.use_adversarial = self.use_discriminator and self.lambda_adv > 0.0
         self.max_epochs = int(cfg["train"].get("max_epochs", 30))
         self.log_every = int(cfg["train"].get("log_step", 100))
         self.use_validation = bool(cfg["train"].get("use_validation", True))
@@ -156,11 +160,17 @@ class UncertaintyInterpolationTrainer:
     def _generator_losses(self, raw: torch.Tensor, frames: torch.Tensor) -> Dict[str, torch.Tensor]:
         prediction = raw[..., 0]
         logvar = raw[..., 1]
-        recon_loss = heteroscedastic_gaussian_nll(prediction, frames, logvar, beta=self.loss_beta)
+        nll_loss = heteroscedastic_gaussian_nll(prediction, frames, logvar, beta=self.loss_beta)
+        weighted_l1_loss = torch.zeros((), device=frames.device, dtype=frames.dtype)
+        if self.lambda_w > 0.0:
+            weighted_l1_loss = self.lambda_w * weighted_l1_distance(prediction, frames)
+        pm_term = torch.zeros((), device=frames.device, dtype=frames.dtype)
+        if self.lambda_pm > 0.0:
+            pm_term = self.lambda_pm * pm_loss(prediction, frames, omega=self.pm_omega)
         gen_adv_loss = torch.zeros((), device=frames.device, dtype=frames.dtype)
         if self.use_adversarial and self.discriminator is not None:
             logits_fake = self.discriminator(prediction)
-            gen_adv_loss = self.adv_weight * gan_loss(
+            gen_adv_loss = self.lambda_adv * gan_loss(
                 logits_fake,
                 True,
                 loss_type=self.gan_loss_type,
@@ -168,10 +178,13 @@ class UncertaintyInterpolationTrainer:
                 target_real_label=self.target_real_label,
                 target_fake_label=self.target_fake_label,
             )
-        total_loss = recon_loss + gen_adv_loss
+        total_loss = nll_loss + weighted_l1_loss + pm_term + gen_adv_loss
         return {
             "total_loss": total_loss,
-            "recon_loss": recon_loss,
+            "recon_loss": nll_loss,
+            "nll_loss": nll_loss,
+            "weighted_l1_loss": weighted_l1_loss,
+            "pm_loss": pm_term,
             "gen_adv_loss": gen_adv_loss,
         }
 
@@ -296,6 +309,8 @@ class UncertaintyInterpolationTrainer:
             return {
                 "loss": 0.0,
                 "recon_loss": 0.0,
+                "weighted_l1_loss": 0.0,
+                "pm_loss": 0.0,
                 "gen_adv_loss": 0.0,
                 "disc_loss": 0.0,
             }
@@ -313,6 +328,8 @@ class UncertaintyInterpolationTrainer:
         totals = {
             "loss": 0.0,
             "recon_loss": 0.0,
+            "weighted_l1_loss": 0.0,
+            "pm_loss": 0.0,
             "gen_adv_loss": 0.0,
             "disc_loss": 0.0,
         }
@@ -341,6 +358,8 @@ class UncertaintyInterpolationTrainer:
 
             loss = torch.zeros((), device=self.device, dtype=frames.dtype)
             recon_loss_value = torch.zeros((), device=self.device, dtype=frames.dtype)
+            weighted_l1_loss_value = torch.zeros((), device=self.device, dtype=frames.dtype)
+            pm_loss_value = torch.zeros((), device=self.device, dtype=frames.dtype)
             gen_adv_loss_value = torch.zeros((), device=self.device, dtype=frames.dtype)
             with torch.set_grad_enabled(training):
                 for _ in range(sample_count):
@@ -348,9 +367,13 @@ class UncertaintyInterpolationTrainer:
                     loss_parts = self._generator_losses(raw, frames)
                     loss = loss + loss_parts["total_loss"]
                     recon_loss_value = recon_loss_value + loss_parts["recon_loss"]
+                    weighted_l1_loss_value = weighted_l1_loss_value + loss_parts["weighted_l1_loss"]
+                    pm_loss_value = pm_loss_value + loss_parts["pm_loss"]
                     gen_adv_loss_value = gen_adv_loss_value + loss_parts["gen_adv_loss"]
                 loss = loss / float(sample_count)
                 recon_loss_value = recon_loss_value / float(sample_count)
+                weighted_l1_loss_value = weighted_l1_loss_value / float(sample_count)
+                pm_loss_value = pm_loss_value / float(sample_count)
                 gen_adv_loss_value = gen_adv_loss_value / float(sample_count)
 
             if training:
@@ -363,16 +386,20 @@ class UncertaintyInterpolationTrainer:
 
             totals["loss"] += float(loss.detach())
             totals["recon_loss"] += float(recon_loss_value.detach())
+            totals["weighted_l1_loss"] += float(weighted_l1_loss_value.detach())
+            totals["pm_loss"] += float(pm_loss_value.detach())
             totals["gen_adv_loss"] += float(gen_adv_loss_value.detach())
             totals["disc_loss"] += float(disc_loss_value.detach())
             batches += 1
 
             if training and self.global_step % self.log_every == 0:
                 logging.info(
-                    "step=%d loss=%.6f recon=%.6f gen_adv=%.6f disc=%.6f batch=%d/%d",
+                    "step=%d loss=%.6f nll=%.6f wl1=%.6f pm=%.6f gen_adv=%.6f disc=%.6f batch=%d/%d",
                     self.global_step,
                     float(loss.detach()),
                     float(recon_loss_value.detach()),
+                    float(weighted_l1_loss_value.detach()),
+                    float(pm_loss_value.detach()),
                     float(gen_adv_loss_value.detach()),
                     float(disc_loss_value.detach()),
                     batch_idx + 1,
@@ -380,7 +407,13 @@ class UncertaintyInterpolationTrainer:
                 )
                 if mlflow.active_run() is not None:
                     mlflow.log_metric("train/step_loss", float(loss.detach()), step=self.global_step)
-                    mlflow.log_metric("train/step_recon_loss", float(recon_loss_value.detach()), step=self.global_step)
+                    mlflow.log_metric("train/step_nll_loss", float(recon_loss_value.detach()), step=self.global_step)
+                    mlflow.log_metric(
+                        "train/step_weighted_l1_loss",
+                        float(weighted_l1_loss_value.detach()),
+                        step=self.global_step,
+                    )
+                    mlflow.log_metric("train/step_pm_loss", float(pm_loss_value.detach()), step=self.global_step)
                     mlflow.log_metric("train/step_gen_adv_loss", float(gen_adv_loss_value.detach()), step=self.global_step)
                     if self.use_adversarial:
                         mlflow.log_metric("train/step_disc_loss", float(disc_loss_value.detach()), step=self.global_step)
@@ -455,10 +488,12 @@ class UncertaintyInterpolationTrainer:
             for epoch in range(self.start_epoch, self.max_epochs + 1):
                 train_metrics = self._run_loader(self.train_loader, training=True, sample_count=self.train_samples)
                 logging.info(
-                    "epoch=%d train_loss=%.6f recon=%.6f gen_adv=%.6f disc=%.6f",
+                    "epoch=%d train_loss=%.6f nll=%.6f wl1=%.6f pm=%.6f gen_adv=%.6f disc=%.6f",
                     epoch,
                     train_metrics["loss"],
                     train_metrics["recon_loss"],
+                    train_metrics["weighted_l1_loss"],
+                    train_metrics["pm_loss"],
                     train_metrics["gen_adv_loss"],
                     train_metrics["disc_loss"],
                 )
@@ -468,10 +503,12 @@ class UncertaintyInterpolationTrainer:
                     with torch.no_grad():
                         val_metrics = self._run_loader(self.val_loader, training=False, sample_count=self.val_samples)
                     logging.info(
-                        "epoch=%d val_loss=%.6f recon=%.6f gen_adv=%.6f",
+                        "epoch=%d val_loss=%.6f nll=%.6f wl1=%.6f pm=%.6f gen_adv=%.6f",
                         epoch,
                         val_metrics["loss"],
                         val_metrics["recon_loss"],
+                        val_metrics["weighted_l1_loss"],
+                        val_metrics["pm_loss"],
                         val_metrics["gen_adv_loss"],
                     )
                 else:
@@ -479,12 +516,16 @@ class UncertaintyInterpolationTrainer:
 
                 if mlflow.active_run() is not None:
                     mlflow.log_metric("train/epoch_loss", train_metrics["loss"], step=epoch)
-                    mlflow.log_metric("train/epoch_recon_loss", train_metrics["recon_loss"], step=epoch)
+                    mlflow.log_metric("train/epoch_nll_loss", train_metrics["recon_loss"], step=epoch)
+                    mlflow.log_metric("train/epoch_weighted_l1_loss", train_metrics["weighted_l1_loss"], step=epoch)
+                    mlflow.log_metric("train/epoch_pm_loss", train_metrics["pm_loss"], step=epoch)
                     mlflow.log_metric("train/epoch_gen_adv_loss", train_metrics["gen_adv_loss"], step=epoch)
                     if self.use_adversarial:
                         mlflow.log_metric("train/epoch_disc_loss", train_metrics["disc_loss"], step=epoch)
                     mlflow.log_metric("valid/epoch_loss", val_metrics["loss"], step=epoch)
-                    mlflow.log_metric("valid/epoch_recon_loss", val_metrics["recon_loss"], step=epoch)
+                    mlflow.log_metric("valid/epoch_nll_loss", val_metrics["recon_loss"], step=epoch)
+                    mlflow.log_metric("valid/epoch_weighted_l1_loss", val_metrics["weighted_l1_loss"], step=epoch)
+                    mlflow.log_metric("valid/epoch_pm_loss", val_metrics["pm_loss"], step=epoch)
                     mlflow.log_metric("valid/epoch_gen_adv_loss", val_metrics["gen_adv_loss"], step=epoch)
                     mlflow.log_metric("train/lr", float(self.optimizer.param_groups[0]["lr"]), step=epoch)
                     if self.disc_optimizer is not None:

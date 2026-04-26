@@ -145,6 +145,12 @@ python scripts/infer.py \
   --checkpoint weights/p2igan_uncertainty/best.pt \
   --overwrite
 
+# Monitor training record
+python3 -m mlflow ui \
+  --backend-store-uri ./mlruns \
+  --port 5000
+
+
 ```
 
 ## License
