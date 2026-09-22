@@ -1,0 +1,13 @@
+{
+  "extends": "uncertainty_common.json",
+  "save_dir": "weights/stable_residual_v1/p2igan_decoder_ensemble",
+  "model": {"name": "p2igan_decoder_ensemble", "num_heads": 4, "mc_dropout_rate": 0.0},
+  "loss": {"lambda_crps": 0.10},
+  "uncertainty": {"train_samples": 4, "val_samples": 4, "predict_samples": 4},
+  "train": {
+    "batch_size": 8,
+    "accumulate_steps": 1,
+    "optimizer": {"lr": 0.00002}
+  },
+  "mlflow": {"experiment_name": "p2igan-four-model-uncertainty", "run_name": "M2-decoder-ensemble"}
+}

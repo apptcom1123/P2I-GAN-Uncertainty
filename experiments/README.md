@@ -1,35 +1,74 @@
-# Experiments
+# Uncertainty evaluation
 
-## Structure
-- `config.py`: Central configuration (paths, mode, crop size, experiment switches).
-- `main.py`: Entry point; dispatches exp1/exp2/exp3 and writes results.
-- `io.py`: Shared I/O helpers (zarr loading, masks, cropping, saving).
-- `exp1.py`: Numerical metrics (MAE/RMSE/PSS/SSIM/DTSSIM/NSE + categorical POD/FAR/CSI/HSS).
-- `exp2.py`: Visualization + GIF output; optional paper-style PDF panel.
-- `exp3.py`: NSE scatter plot and residual plot.
-- `results/`: Output root; each run writes to `results/<experiment_name>/`.
+The experiments evaluate the Zarr format written by `scripts/infer.py`. Each
+event must contain `target`, `mask`, `mean`, `predictive_std`, and may also
+contain `aleatoric_std`, `secondary_std`, `masked_input`, raw `member_mean`,
+raw `member_logvar`, and `ensemble`. `epistemic_std` is retained as a semantic
+alias only for decoder-ensemble and MC-dropout stores; M4 uses `style_std`.
 
-## How to run
+## Design
+
+- **EXP-1 — scorecard:** MAE/RMSE/bias/SSIM, rainfall-threshold scores, FSS,
+  predictive/aleatoric Gaussian NLL, ensemble CRPS, sampled multivariate Energy
+  Score, spread-skill ratio, interval coverage/width/Winkler score, uncertainty
+  decomposition, and event-bootstrap 95% confidence intervals.
+- **EXP-2 — calibration:** coverage reliability, rank histogram,
+  uncertainty–error alignment, and spatial case studies. Optional variance
+  scaling is fitted only when a separate `calibration_path` is configured.
+- **EXP-3 — stress and usefulness:** heavy-rain strata, bad-error AUROC/AUPRC,
+  risk–coverage/AURC, aleatoric/secondary-spread alignment, and comparisons across any
+  ablation or stress stores listed in `config.py`.
+
+`mask=1` means observed. The default evaluation region is therefore `missing`,
+which measures interpolation pixels rather than copying performance at gauges.
+Ensembles are transformed member-by-member to mm/h before CRPS, coverage, and
+spread are computed; this is necessary because the rain encoding is nonlinear.
+
+## Run
+
+First export inference results (the configured default is shown):
+
 ```bash
-python -m experiments.main
+python scripts/infer.py \
+  --config \
+    p2igan_bench/config/p2igan_joint.json \
+    p2igan_bench/config/p2igan_decoder_ensemble.json \
+    p2igan_bench/config/p2igan_mc_dropout.json \
+    p2igan_bench/config/p2igan_latent_comod.json \
+  --output-dir inference/four_models \
+  --overwrite
 ```
 
-## Configuration
-Edit `experiments/config.py`:
-- `mode`: `radar` or `gauge`.
-- `run_exp1`, `run_exp2`, `run_exp3`: enable or disable experiments.
-- `crop_size`: center crop size shared across experiments.
-- `data.*`: input paths (zarr, masks, method outputs).
+The evaluation manifest records model identity, uncertainty semantics, training
+loss profile, expected raw-member count, test store, independent calibration
+store, and scenario group. Edit
+`experiments/configs/four_models.json` for real runs, then run:
 
-### exp2 paper-style PDF
-Set in `experiments/config.py`:
-- `exp2_paper_enabled = True`
-- `exp2_paper_folders`: map method names to PNG folders (expects `rain{event_id}` subfolders).
-- `exp2_paper_events`: list of `{event_id, select_idx, title}`.
+```bash
+python -m experiments.main --config experiments/configs/four_models.json
+```
 
-Output will be written to:
-- `experiments/results/<experiment_name>/exp2/<output_pdf>`
+Before metrics are calculated, preflight checks model variant metadata, event
+alignment, target/mask equality, and raw-member counts. Use `--check-only` when
+validating a newly exported set of stores.
 
+## Fake end-to-end integration
 
+Generate four small Zarr stores with the exact inference contract—including
+raw means/log-variances and architecture-specific secondary uncertainty—and
+run all experiments:
 
- python -m experiments.main
+```bash
+python -m experiments.generate_fake_outputs --overwrite
+python -m experiments.main --config experiments/configs/fake_four_models.json
+```
+
+Outputs are written under
+`experiments/results/fake_four_model_integration/`. This exercises EXP-1/2/3,
+calibration fitting, JSON/TSV reports, and every plot without requiring trained
+checkpoints. Synthetic scores only validate plumbing and must never be reported
+as model performance.
+
+Never use the test output as `calibration_path`. For station-density or sensor
+noise experiments, export a separate inference store for every condition and
+give it a non-`in-domain` `group` in the configuration.

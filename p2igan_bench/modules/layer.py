@@ -123,28 +123,43 @@ class BasicConv_do_eval(nn.Module):
         return self.main(x)
 
 
+def _group_count(channels: int, requested: int) -> int:
+    groups = min(max(1, requested), channels)
+    while channels % groups:
+        groups -= 1
+    return groups
+
+
 class ResBlock_do(nn.Module):
-    def __init__(self, out_channel):
+    """Pre-normalized DOConv residual block with bounded residual gain."""
+
+    def __init__(self, out_channel, residual_scale: float = 0.1, norm_groups: int = 8):
         super().__init__()
+        self.norm = nn.GroupNorm(_group_count(out_channel, norm_groups), out_channel)
         self.main = nn.Sequential(
             BasicConv_do(out_channel, out_channel, kernel_size=3, stride=1, relu=True),
             BasicConv_do(out_channel, out_channel, kernel_size=3, stride=1, relu=False),
         )
+        self.residual_scale = float(residual_scale)
 
     def forward(self, x):
-        return self.main(x) + x
+        return x + self.residual_scale * self.main(self.norm(x))
 
 
 class ResBlock_do_eval(nn.Module):
-    def __init__(self, out_channel):
+    """Inference counterpart of :class:`ResBlock_do`."""
+
+    def __init__(self, out_channel, residual_scale: float = 0.1, norm_groups: int = 8):
         super().__init__()
+        self.norm = nn.GroupNorm(_group_count(out_channel, norm_groups), out_channel)
         self.main = nn.Sequential(
             BasicConv_do_eval(out_channel, out_channel, kernel_size=3, stride=1, relu=True),
             BasicConv_do_eval(out_channel, out_channel, kernel_size=3, stride=1, relu=False),
         )
+        self.residual_scale = float(residual_scale)
 
     def forward(self, x):
-        return self.main(x) + x
+        return x + self.residual_scale * self.main(self.norm(x))
 
 
 class ResBlock_do_fft_bench(nn.Module):

@@ -1,14 +1,26 @@
+"""I/O helpers for the uncertainty Zarr format exported by scripts/infer.py."""
+
 from __future__ import annotations
 
 import json
 import os
 from dataclasses import asdict, is_dataclass
-from typing import Dict, Iterable, Optional, Tuple, Union
+from collections.abc import Iterator, Mapping
+from typing import Dict, Iterable, Optional
 
 import numpy as np
 
 
+FIELD_KEYS = (
+    "target", "masked_input", "mask", "mean", "aleatoric_std",
+    "secondary_std", "epistemic_std", "style_std", "proxy_secondary_std",
+    "predictive_std", "member_mean", "member_logvar", "ensemble",
+)
+MEMBER_KEYS = {"ensemble", "member_mean", "member_logvar"}
+
+
 def ensure_thw(arr: np.ndarray) -> np.ndarray:
+    arr = np.asarray(arr)
     if arr.ndim == 5 and arr.shape[0] == 1:
         arr = arr[0]
     if arr.ndim == 4 and arr.shape[1] == 1:
@@ -20,26 +32,22 @@ def ensure_thw(arr: np.ndarray) -> np.ndarray:
     return arr
 
 
-def crop_center(arr: np.ndarray, size: int) -> np.ndarray:
-    arr = ensure_thw(arr)
-    t, h, w = arr.shape
-    if size > min(h, w):
-        raise ValueError(f"crop size {size} exceeds input {h}x{w}")
-    top = (h - size) // 2
-    left = (w - size) // 2
-    return arr[:, top:top + size, left:left + size]
-
-
-def load_mask(path: str) -> np.ndarray:
-    mask = np.loadtxt(path)
-    return mask.astype(bool)
-
-
-def _crop_last2(arr: np.ndarray, size: Optional[int]) -> np.ndarray:
-    if size is None:
-        return np.asarray(arr)
+def ensure_ethw(arr: np.ndarray) -> np.ndarray:
     arr = np.asarray(arr)
-    if arr.ndim < 2:
+    if arr.ndim == 6 and arr.shape[0] == 1:
+        arr = arr[0]
+    if arr.ndim == 5 and arr.shape[2] == 1:
+        arr = arr[:, :, 0]
+    if arr.ndim == 5 and arr.shape[-1] == 1:
+        arr = arr[..., 0]
+    if arr.ndim != 4:
+        raise ValueError(f"Expected ensemble [E,T,H,W], got shape {arr.shape}")
+    return arr
+
+
+def crop_last2(arr: np.ndarray, size: Optional[int]) -> np.ndarray:
+    arr = np.asarray(arr)
+    if size is None:
         return arr
     h, w = arr.shape[-2:]
     if size > min(h, w):
@@ -49,144 +57,122 @@ def _crop_last2(arr: np.ndarray, size: Optional[int]) -> np.ndarray:
     return arr[..., top:top + size, left:left + size]
 
 
-def _open_zarr_xarray(path: str, key: Optional[str] = None, crop_size: Optional[int] = None) -> np.ndarray:
-    import xarray as xr
-
-    ds = xr.open_zarr(path)
-    if hasattr(ds, "data_vars") and len(ds.data_vars) > 0:
-        if key is None:
-            key = list(ds.data_vars.keys())[0]
-        arr = ds[key].values
-    else:
-        arr = ds.values
-    return _crop_last2(arr, crop_size)
+def _read_cropped(array, size: Optional[int]) -> np.ndarray:
+    if size is None:
+        return np.asarray(array)
+    h, w = array.shape[-2:]
+    if size > min(h, w):
+        raise ValueError(f"crop size {size} exceeds input {h}x{w}")
+    top = (h - size) // 2
+    left = (w - size) // 2
+    return np.asarray(array[..., top:top + size, left:left + size])
 
 
-def _open_zarr_native(path: str, crop_size: Optional[int] = None) -> np.ndarray:
+class LazyEventMapping(Mapping):
+    """Read one event at a time so large ensembles do not fill system memory."""
+
+    def __init__(self, root, path: str, crop_size: Optional[int], stored_scale: float):
+        self.root = root
+        self.path = path
+        self.crop_size = crop_size
+        self.to_encoded_255 = 255.0 / stored_scale
+        self.names = tuple(sorted(root.group_keys()))
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self.names)
+
+    def __len__(self) -> int:
+        return len(self.names)
+
+    def __getitem__(self, event_key: str) -> Dict[str, np.ndarray]:
+        if event_key not in self.names:
+            raise KeyError(event_key)
+        group = self.root[event_key]
+        available = set(group.array_keys())
+        missing = {"target", "mask", "mean", "predictive_std"} - available
+        if missing:
+            raise ValueError(f"{self.path}/{event_key} is missing arrays: {sorted(missing)}")
+        event: Dict[str, np.ndarray] = {}
+        for key in FIELD_KEYS:
+            if key not in available:
+                continue
+            # Slice first and materialize second. This keeps peak memory near one event.
+            raw = _read_cropped(group[key], self.crop_size)
+            event[key] = ensure_ethw(raw) if key in MEMBER_KEYS else ensure_thw(raw)
+            if key not in {"mask", "member_logvar"} and self.to_encoded_255 != 1.0:
+                event[key] = event[key].astype(np.float64) * self.to_encoded_255
+        target_shape = event["target"].shape
+        for key, value in event.items():
+            compatible = value.shape[1:] == target_shape if key in MEMBER_KEYS else value.shape == target_shape
+            if not compatible:
+                raise ValueError(
+                    f"{self.path}/{event_key}/{key} shape {value.shape} does not match target {target_shape}"
+                )
+        return event
+
+
+def load_uncertainty_store(path: str, crop_size: Optional[int] = None) -> Dict[str, object]:
+    """Open an inference store and lazily materialize one event at a time."""
     import zarr
 
-    z = zarr.open(path, mode="r")
-    if hasattr(z, "array_keys"):
-        keys = list(z.array_keys())
-        if keys:
-            return _crop_last2(np.asarray(z[keys[0]]), crop_size)
-    return _crop_last2(np.asarray(z), crop_size)
+    root = zarr.open_group(path, mode="r")
+    attrs = dict(root.attrs)
+    stored_scale = float(attrs.get("value_scale", 255.0))
+    if stored_scale <= 0:
+        raise ValueError(f"Invalid value_scale={stored_scale} in {path}")
+    events = LazyEventMapping(root, path, crop_size, stored_scale)
+    if not events:
+        raise ValueError(f"No event groups found in uncertainty store: {path}")
+    attrs["source_value_scale"] = stored_scale
+    attrs["evaluation_value_scale"] = 255.0
+    return {"attrs": attrs, "events": events}
 
 
-def _load_zarr_events_xarray(path: str, crop_size: Optional[int] = None) -> Optional[Dict[str, np.ndarray]]:
-    try:
-        import xarray as xr
-    except Exception:
-        return None
-
-    ds = xr.open_zarr(path)
-    if hasattr(ds, "data_vars") and len(ds.data_vars) > 0:
-        return {k: _crop_last2(np.asarray(ds[k].values), crop_size) for k in ds.data_vars.keys()}
-    return None
-
-
-def _load_zarr_events_native(path: str, crop_size: Optional[int] = None) -> Optional[Dict[str, np.ndarray]]:
-    try:
-        import zarr
-    except Exception:
-        return None
-
-    # Some converted stores are laid out as a directory of per-event arrays
-    # without a root .zgroup file. Handle that shape explicitly.
-    try:
-        child_names = sorted(os.listdir(path))
-    except Exception:
-        child_names = []
-    event_dirs = [
-        name for name in child_names
-        if os.path.isfile(os.path.join(path, name, ".zarray"))
-    ]
-    if event_dirs:
-        return {
-            name: _crop_last2(np.asarray(zarr.open(os.path.join(path, name), mode="r")), crop_size)
-            for name in event_dirs
-        }
-
-    z = zarr.open(path, mode="r")
-    if hasattr(z, "group_keys"):
-        keys = list(z.group_keys())
-        if keys:
-            return {k: _crop_last2(np.asarray(z[k]), crop_size) for k in keys}
-    if hasattr(z, "array_keys"):
-        keys = list(z.array_keys())
-        if keys:
-            return {k: _crop_last2(np.asarray(z[k]), crop_size) for k in keys}
-    return None
+def evaluation_mask(mask: np.ndarray, region: str) -> np.ndarray:
+    """Return a [T,H,W] selector; inference mask=1 means observed."""
+    observed = ensure_thw(mask) > 0.5
+    normalized = region.lower().strip()
+    if normalized == "missing":
+        return ~observed
+    if normalized == "observed":
+        return observed
+    if normalized == "all":
+        return np.ones_like(observed, dtype=bool)
+    raise ValueError(f"Unknown evaluation_region={region!r}; use missing, observed, or all")
 
 
-def load_zarr_array(path: str,
-                    key: Optional[str] = None,
-                    return_events: bool = False,
-                    crop_size: Optional[int] = None) -> Union[np.ndarray, Dict[str, np.ndarray]]:
-    if not isinstance(path, str) or not path.strip():
-        raise ValueError("zarr path is empty")
-    path = path.strip()
-    if return_events:
-        events = _load_zarr_events_xarray(path, crop_size=crop_size)
-        if events is None:
-            events = _load_zarr_events_native(path, crop_size=crop_size)
-        if events:
-            return events
-    try:
-        arr = _open_zarr_xarray(path, key=key, crop_size=crop_size)
-    except Exception:
-        arr = _open_zarr_native(path, crop_size=crop_size)
-    return np.asarray(arr)
+def encoded_to_mmhr(arr: np.ndarray, divisor: float = 3.0) -> np.ndarray:
+    """Convert the repository's stored 0--255 rain encoding to mm h^-1."""
+    values = np.asarray(arr, dtype=np.float64) / float(divisor)
+    return np.clip(0.036 * np.power(10.0, values * 0.0625), 0.0, 200.0)
 
 
-def align_length(a: np.ndarray, b: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
-    a = ensure_thw(a)
-    b = ensure_thw(b)
-    n = min(a.shape[0], b.shape[0])
-    return a[:n], b[:n]
-
-
-def select_by_mask(arr: np.ndarray, mask: np.ndarray, invert: bool = False) -> np.ndarray:
-    arr = ensure_thw(arr)
-    mask = mask.astype(bool)
-    if mask.shape != arr.shape[1:]:
-        raise ValueError(f"Mask shape {mask.shape} != data shape {arr.shape[1:]}")
-    if invert:
-        mask = ~mask
-    flat = arr.reshape(arr.shape[0], -1)
-    return flat[:, mask.ravel()]
-
-
-def mask_for_input(arr: np.ndarray, mask: np.ndarray) -> np.ndarray:
-    arr = ensure_thw(arr)
-    mask = mask.astype(bool)
-    if mask.shape != arr.shape[1:]:
-        raise ValueError(f"Mask shape {mask.shape} != data shape {arr.shape[1:]}")
-    out = arr.copy()
-    out[:, mask] = 0.0
-    return out
-
-
-def save_json(path: str, payload: Dict) -> None:
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(payload, f, indent=2, sort_keys=True)
+def convert_rain(arr: np.ndarray, enabled: bool, divisor: float) -> np.ndarray:
+    return encoded_to_mmhr(arr, divisor=divisor) if enabled else np.asarray(arr, dtype=np.float64)
 
 
 def ensure_dir(path: str) -> None:
     os.makedirs(path, exist_ok=True)
 
 
+def _json_default(value):
+    if isinstance(value, np.generic):
+        return value.item()
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")
+
+
+def save_json(path: str, payload: Mapping) -> None:
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2, sort_keys=True, default=_json_default, allow_nan=True)
+
+
 def save_config_snapshot(path: str, cfg) -> None:
-    if is_dataclass(cfg):
-        payload = asdict(cfg)
-    elif hasattr(cfg, "__dict__"):
-        payload = cfg.__dict__
-    else:
-        payload = cfg
-    save_json(path, payload)
+    save_json(path, asdict(cfg) if is_dataclass(cfg) else cfg)
 
 
 def save_text(path: str, lines: Iterable[str]) -> None:
     with open(path, "w", encoding="utf-8") as f:
         for line in lines:
-            f.write(line.rstrip() + "\n")
+            f.write(str(line).rstrip() + "\n")

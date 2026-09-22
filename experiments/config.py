@@ -1,190 +1,118 @@
+"""Typed, JSON-loadable configuration for the four-model evaluation."""
+
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Dict, Optional, Tuple
 
 
 @dataclass
-class ModeConfig:
-    observation_path: str
-    methods: Dict[str, str]
-    mask_train_path: str
-    mask_test_path: str
-    nimrod_path: str
+class MethodConfig:
+    path: str
+    calibration_path: Optional[str] = None
+    group: str = "in-domain"
+    model_variant: Optional[str] = None
+    uncertainty_kind: str = "unspecified"
+    secondary_kind: Optional[str] = None
+    loss_profile: str = "unspecified"
+    expected_raw_members: Optional[int] = None
+    enabled: bool = True
+
+
+def _default_methods() -> Dict[str, MethodConfig]:
+    root = "inference/four_models"
+    return {
+        "M1-joint": MethodConfig(
+            path=f"{root}/p2igan_joint.zarr", model_variant="p2igan_joint",
+            uncertainty_kind="aleatoric", secondary_kind="none",
+            loss_profile="gaussian_nll+joint_gan",
+            expected_raw_members=1,
+        ),
+        "M2-decoder-ensemble": MethodConfig(
+            path=f"{root}/p2igan_decoder_ensemble.zarr", model_variant="p2igan_decoder_ensemble",
+            uncertainty_kind="between_decoder", loss_profile="member_nll+crps",
+            secondary_kind="between_decoder",
+            expected_raw_members=4,
+        ),
+        "M3-mc-dropout": MethodConfig(
+            path=f"{root}/p2igan_mc_dropout.zarr", model_variant="p2igan_mc_dropout",
+            uncertainty_kind="mc_dropout", loss_profile="member_nll",
+            secondary_kind="mc_dropout",
+            expected_raw_members=16,
+        ),
+        "M4-latent-comod": MethodConfig(
+            path=f"{root}/p2igan_latent_comod.zarr", model_variant="p2igan_latent_comod",
+            uncertainty_kind="latent_style", loss_profile="mixture_nll+energy",
+            secondary_kind="latent_style",
+            expected_raw_members=16,
+        ),
+    }
+
 
 @dataclass
 class ExperimentConfig:
-    experiment_name: str = "exp12_pm_v3_dkstdk"
-    description: str = "evaluation of DK and STDK methods in different loss functions."
-    save_dir: str = "results"
-    mode: str = "radar"  # "radar" or "gauge"
-    run_exp1: bool = False
-    run_exp2_gif: bool = False
-    run_exp2_pdf: bool = True
-    run_exp3: bool = False
-    crop_size: int = 128
-    visualization_vmin: float = 0.0
-    visualization_vmax: float = 32.0
-    gif_fps: int = 6
-    exp1_pool8: bool = True
-    exp2_paper_output_pdf: str = "two_events_stacked_titles.pdf"
-    exp2_paper_crop_output: str = "cropped_stitched.pdf"
-    exp2_paper_mask_path: Optional[str] = None
-    # exp2_paper_radar_method_order: Tuple[str, ...] = (
-    #     "Radar",
-    #     "P2I-GAN+",
-    #     "P2I-GAN",
-    #     "DK",
-    #     "STDK",
-    #     "OK",
-    #     "RBF",
-    # )
-    exp2_paper_radar_method_order: Tuple[str, ...] = (
-        "Obs", 
-        "DK (Full)", 
-        "STDK (Full)", 
-        "DK (w/o pm)", 
-        "STDK (w/o pm)", 
-        "DK (mse loss)", 
-        "STDK (mse loss)",  
-    )
-    exp2_paper_gauge_method_order: Tuple[str, ...] = (
-        "Gauge",
-        "Radar",
-        "P2I-GAN+",
-        "P2I-GAN",
-        "DK",
-        "STDK",
-        "KED",
-        "KRE",
-    )
+    experiment_name: str = "p2igan_four_model_uncertainty"
+    description: str = "Controlled four-model uncertainty comparison."
+    save_dir: str = "experiments/results"
+    run_exp1: bool = True
+    run_exp2: bool = True
+    run_exp3: bool = True
+    methods: Dict[str, MethodConfig] = field(default_factory=_default_methods)
 
-    exp2_paper_events: Tuple[Dict[str, object], ...] = (
-        {
-            "event_id": 5,
-            "select_idx": (25, 26, 27),
-            "title": "Stratiform . Start Time : 2021-05-20 11:00:00 UTC",
-        },
-        {
-            "event_id": 19,
-            "select_idx": (19, 20, 21),
-            "title": "Convective . Start Time : 2022-10-31 19:35:00 UTC",
-        },
+    evaluation_region: str = "missing"
+    crop_size: Optional[int] = 128
+    encoded_to_mmhr: bool = True
+    encoding_divisor: float = 3.0
+    rain_thresholds_mmhr: Tuple[float, ...] = (0.5, 2.0, 4.0, 8.0, 16.0)
+    coverage_levels: Tuple[float, ...] = (0.50, 0.70, 0.80, 0.90, 0.95)
+    fss_scales: Tuple[int, ...] = (1, 2, 4, 8)
+
+    bootstrap_replicates: int = 1000
+    bootstrap_seed: int = 2024
+    bad_error_quantile: float = 0.90
+    risk_coverages: Tuple[float, ...] = (
+        0.10, 0.20, 0.30, 0.40, 0.50, 0.60, 0.70, 0.80, 0.90, 1.00
     )
+    case_study_events: Tuple[str, ...] = ()
+    case_study_frame: Optional[int] = None
+    max_scatter_points: int = 50000
 
-    # exp2_paper_events: Tuple[Dict[str, object], ...] = (
-    #     {
-    #         "event_id": 4,
-    #         "select_idx": (20, 21, 22),
-    #         "title": "Stratiform . Start Time : 2021-05-08 10:40:00 UTC",
-    #     },
-    #     {
-    #         "event_id": 10,
-    #         "select_idx": (26, 27, 28),
-    #         "title": "Convective . Start Time : 2021-12-07 10:10:00 UTC",
-    #     },
-    # )
-    exp2_paper_folders: Dict[str, str] = field(default_factory=dict)
-    data: Dict[str, ModeConfig] = field(default_factory=dict)
+    # Evaluation cost / integrity controls.
+    energy_score_pair_samples: int = 128
+    energy_score_max_points: int = 16384
+    require_aligned_events: bool = True
+    alignment_check_events: int = 3
+    require_raw_members: bool = True
+    fail_on_variant_mismatch: bool = True
 
-def build_config() -> ExperimentConfig:
-    radar_mode = ModeConfig(
-        observation_path=(
-            "/home/NAS/homes/brick-10015/P2I-GAN-benchmark/datasets/nimrod/nimrod_test.zarr"
-        ),
-        nimrod_path=(
-            "/home/NAS/homes/brick-10015/P2I-GAN-benchmark/datasets/nimrod/nimrod_test.zarr"
-        ),
-        methods={
-            "DK (Full)": (
-                "/home/NAS/homes/brick-10015/P2I-GAN-benchmark/datasets/infer/dk_v3_pm_nimrod.zarr"
-            ),
-            "STDK (Full)": (
-                "/home/NAS/homes/brick-10015/P2I-GAN-benchmark/datasets/infer/stdk_v3_pm_nimrod.zarr"
-            ),
-            "DK (w/o pm)": (
-                "/home/NAS/homes/brick-10015/P2I-GAN-benchmark/datasets/predict/v2/dk_nimrod.zarr"
-            ),
-            "STDK (w/o pm)": (
-                "/home/NAS/homes/brick-10015/P2I-GAN-benchmark/datasets/predict/v2/stdk_nimrod.zarr"
-            ),
-            "DK (mse loss)": (
-                "/home/NAS/homes/brick-10015/P2I-GAN-benchmark/datasets/predict/dk_mse_nimrod.zarr"
-            ),
-            "STDK (mse loss)": (
-                "/home/NAS/homes/brick-10015/P2I-GAN-benchmark/datasets/predict/stdk_nimrod.zarr"
-            ),
-        },
-        # methods={
-        #     "P2I-GAN+": (
-        #         "/home/NAS/homes/brick-10015/P2I-GAN-benchmark/datasets/infer/p2igan_gan_baseline_v3_pm_nimrod.zarr"
-        #     ),
-        #     "P2I-GAN": (
-        #         "/home/NAS/homes/brick-10015/P2I-GAN-benchmark/datasets/infer/p2igan_baseline_v3_pm_nimrod.zarr"
-        #     ),
-        #     "DK": (
-        #         "/home/NAS/homes/brick-10015/P2I-GAN-benchmark/datasets/infer/dk_v3_pm_nimrod.zarr"
-        #     ),
-        #     "STDK": (
-        #         "/home/NAS/homes/brick-10015/P2I-GAN-benchmark/datasets/infer/stdk_v3_pm_nimrod.zarr"
-        #     ),
-        #     "OK": (
-        #         "/home/NAS/homes/brick-10015/P2I-GAN-benchmark/datasets/infer/ok_nimrod.zarr"
-        #     ),
-        #     "RBF": (
-        #         "/home/NAS/homes/brick-10015/P2I-GAN-benchmark/datasets/infer/rbf_nimrod.zarr"
-        #     ),
-        # },
-        mask_train_path=(
-            "/home/NAS/homes/brick-10015/P2I-GAN-benchmark/datasets/masks/gauge_mask_128_train.txt"
-        ),
-        mask_test_path=(
-            "/home/NAS/homes/brick-10015/P2I-GAN-benchmark/datasets/masks/gauge_mask_128_test.txt"
-        ),
-    )
 
-    gauge_mode = ModeConfig(
-        observation_path=(
-            "/home/NAS/homes/brick-10015/P2I-GAN-benchmark/datasets/midas/midas_test.zarr"
-        ),
-        nimrod_path=(
-            "/home/NAS/homes/brick-10015/P2I-GAN-benchmark/datasets/nimrod/nimrod_test.zarr"
-        ),
-        methods={
-            "P2I-GAN+": (
-                "/home/NAS/homes/brick-10015/P2I-GAN-benchmark/datasets/infer/p2igan_gan_baseline_v3_pm_gauge.zarr"
-            ),
-            "P2I-GAN": (
-                "/home/NAS/homes/brick-10015/P2I-GAN-benchmark/datasets/infer/p2igan_baseline_v3_pm_gauge.zarr"
-            ),
-            "DK": (
-                "/home/NAS/homes/brick-10015/P2I-GAN-benchmark/datasets/infer/dk_v3_pm_gauge.zarr"
-            ),
-            "STDK": (
-                "/home/NAS/homes/brick-10015/P2I-GAN-benchmark/datasets/infer/stdk_v3_pm_gauge.zarr"
-            ),
-            "KRE": (
-                "/home/NAS/homes/brick-10015/P2I-GAN-benchmark/datasets/infer/kre_gauge.zarr"
-            ),
-            "KED": (
-                "/home/NAS/homes/brick-10015/P2I-GAN-benchmark/datasets/infer/ked_gauge.zarr"
-            ),
-        },
-        mask_train_path=(
-            "/home/NAS/homes/brick-10015/P2I-GAN-benchmark/datasets/masks/gauge_mask_128_train.txt"
-        ),
-        mask_test_path=(
-            "/home/NAS/homes/brick-10015/P2I-GAN-benchmark/datasets/masks/gauge_mask_128_test.txt"
-        ),
-    )
+_TUPLE_FIELDS = {
+    "rain_thresholds_mmhr", "coverage_levels", "fss_scales", "risk_coverages",
+    "case_study_events",
+}
 
+
+def build_config(path: Optional[str] = None) -> ExperimentConfig:
+    """Return defaults or merge a JSON experiment manifest over them."""
     cfg = ExperimentConfig()
-    cfg.data = {"radar": radar_mode, "gauge": gauge_mode}
+    if path is None:
+        return cfg
+    source = Path(path)
+    with source.open("r", encoding="utf-8") as handle:
+        payload = json.load(handle)
+    methods = payload.pop("methods", None)
+    for key, value in payload.items():
+        if not hasattr(cfg, key):
+            raise ValueError(f"Unknown experiment config key: {key}")
+        setattr(cfg, key, tuple(value) if key in _TUPLE_FIELDS else value)
+    if methods is not None:
+        cfg.methods = {
+            name: MethodConfig(**method)
+            for name, method in methods.items()
+            if method.get("enabled", True)
+        }
+    if not cfg.methods:
+        raise ValueError("Experiment config contains no enabled methods")
     return cfg
-
-
-def get_mode_config(cfg: ExperimentConfig) -> ModeConfig:
-    mode_cfg = cfg.data.get(cfg.mode)
-    if mode_cfg is None:
-        raise ValueError(f"Unknown mode: {cfg.mode}")
-    return mode_cfg

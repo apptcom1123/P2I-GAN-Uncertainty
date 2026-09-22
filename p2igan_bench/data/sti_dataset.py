@@ -8,14 +8,22 @@ import h5py
 import zarr
 import re
 import random
+from functools import lru_cache
 
 #this part will creat mask and the dataset
 
 transform = Compose([
-    Lambda(lambda x: torch.tensor(x))  # Convert to tensor
+    Lambda(lambda x: torch.from_numpy(x) if isinstance(x, np.ndarray) else x)
 ])
 
-def create_mask(video_tensor, mask_type='sti', mask_file=None, block_sizes=[4], keep=4, interval=[2,5]):
+
+@lru_cache(maxsize=8)
+def _load_mask_matrix(mask_file):
+    """Parse a static gauge mask once per DataLoader worker."""
+    return np.loadtxt(mask_file).astype(np.bool_)
+
+def create_mask(video_tensor, mask_type='sti', mask_file=None, block_sizes=[4], keep=4,
+                interval=[2,5], static_mask=None):
    
     """
     Create a mask for the video tensor with five types: 'sti', 'fi', 'nowcasting', 'stin', or 'stis'.
@@ -102,19 +110,25 @@ def create_mask(video_tensor, mask_type='sti', mask_file=None, block_sizes=[4], 
             mask[t, :, :, :] = 1  # 保留幀
 
     elif mask_type == 'stis' and mask_file is not None:
-        # Load mask from file
-        with open(mask_file, 'r') as f:
-            mask_matrix = np.loadtxt(f)
-        mask_matrix = torch.tensor(mask_matrix, dtype=torch.bool).unsqueeze(-1)  # Add an extra dimension
+        mask_matrix = static_mask if static_mask is not None else _load_mask_matrix(mask_file)
+        if mask_matrix.shape != (H, W):
+            source_h, source_w = mask_matrix.shape
+            if source_h < H or source_w < W:
+                raise ValueError(
+                    f"Mask matrix in {mask_file} is smaller than video spatial dimensions {H}x{W}"
+                )
+            top = (source_h - H) // 2
+            left = (source_w - W) // 2
+            mask_matrix = mask_matrix[top:top + H, left:left + W]
+        mask_matrix = torch.from_numpy(np.asarray(mask_matrix, dtype=np.bool_)).unsqueeze(-1)
 
         # Ensure the mask matrix has the correct shape
         if mask_matrix.shape != (H, W, 1):
             raise ValueError(f"Mask matrix in {mask_file} does not match video spatial dimensions {H}x{W}")
 
 
-        # Apply the same mask to all channels and frames
-        for t in range(T):
-            mask[t, :, :, :] = mask_matrix
+        # Expand the static gauge map without a Python loop.
+        mask = mask_matrix.to(dtype=torch.float32).unsqueeze(0).expand(T, -1, -1, C).clone()
 
     else:
         raise ValueError("Invalid mask type or mask file not provided for 'selfdefine' mask.")
@@ -151,6 +165,11 @@ class Dataset(torch.utils.data.Dataset):
         self.block_sizes = mask_cfg.get('block_sizes', [4])
         self.mask_keep = mask_cfg.get('keep', 4)
         self.mask_interval = mask_cfg.get('interval', [2, 5])
+        self.static_mask = (
+            _load_mask_matrix(self.mask_file)
+            if self.mask_type == 'stis' and self.mask_file is not None
+            else None
+        )
 
         self.width = args['w']
         self.height = args['h']
@@ -183,7 +202,13 @@ class Dataset(torch.utils.data.Dataset):
 
     def process_hdf5(self, hdf5_path):
         with h5py.File(hdf5_path, 'r') as f:
-            video_data = f['frames'][:]
+            frames = f['frames']
+            time_stop = frames.shape[0] if self.sample_length is None else min(self.sample_length, frames.shape[0])
+            source_h, source_w = frames.shape[1:3]
+            top = max((source_h - self.height) // 2, 0)
+            left = max((source_w - self.width) // 2, 0)
+            # Read only the requested temporal window and center crop from HDF5.
+            video_data = frames[:time_stop, top:top + self.height, left:left + self.width]
      
             # 確保數據格式正確
             if video_data.ndim == 3:  # 如果是 (T, H, W)
@@ -219,6 +244,7 @@ class Dataset(torch.utils.data.Dataset):
             block_sizes=self.block_sizes,
             keep=self.mask_keep,
             interval=self.mask_interval,
+            static_mask=self.static_mask,
         )
         masked_video = video_data.clone()
         masked_video = masked_video * mask

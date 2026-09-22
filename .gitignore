@@ -19,6 +19,7 @@ dist/
 .ipynb_checkpoints
 mlruns/
 experiments/results/
+experiments/fake_outputs/
 *.log
 *.ckpt
 *.pth

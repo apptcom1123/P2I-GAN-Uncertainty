@@ -1,11 +1,19 @@
 from copy import deepcopy
-from pathlib import Path
-import json
 
 import torch
 from torch.utils.data import DataLoader, Subset
 
 from .sti_dataset import Dataset, Dataset_ZarrTrain  # 舊 Dataset 實作
+
+
+def _seed_worker(worker_id):
+    del worker_id
+    seed = torch.initial_seed() % (2 ** 32)
+    torch.manual_seed(seed)
+    import numpy as np
+    import random
+    np.random.seed(seed)
+    random.seed(seed)
 
 
 class P2IDataModule:
@@ -17,6 +25,7 @@ class P2IDataModule:
         self.pin_memory = train_cfg.get("pin_memory", True)
         self.persistent_workers = train_cfg.get("persistent_workers", True)
         self.prefetch_factor = train_cfg.get("prefetch_factor", 2)
+        self.drop_last = bool(train_cfg.get("drop_last", True))
 
         train_cfg = data_cfg["train"]
         self.train_args = self._build_dataset_args(train_cfg)
@@ -57,7 +66,7 @@ class P2IDataModule:
         train_bs = self.cfg["train"]["batch_size"]
         if self.train_dataset is None:
             return None
-        return self._create_loader(self.train_dataset, shuffle=True, batch_size=train_bs)
+        return self._create_loader(self.train_dataset, shuffle=True, batch_size=train_bs, drop_last=self.drop_last)
 
     def val_dataloader(self):
         if self.valid_dataset is None:
@@ -71,7 +80,7 @@ class P2IDataModule:
         test_bs = 1
         return self._create_loader(self.test_dataset, shuffle=self.test_shuffle, batch_size=test_bs)
 
-    def _create_loader(self, dataset, shuffle, batch_size):
+    def _create_loader(self, dataset, shuffle, batch_size, drop_last=False):
         collate_fn = None
         if getattr(dataset, "is_zarr", False) and getattr(dataset, "sample_length", None) is None:
             collate_fn = self._collate_variable_length
@@ -84,6 +93,8 @@ class P2IDataModule:
             persistent_workers=self.num_workers > 0 and self.persistent_workers,
             prefetch_factor=self.prefetch_factor if self.num_workers > 0 else None,
             collate_fn=collate_fn,
+            drop_last=drop_last,
+            worker_init_fn=_seed_worker,
         )
 
     def _is_train_zarr(self, data_root):
@@ -168,60 +179,3 @@ class P2IDataModule:
         masked_videos = torch.stack([_pad(v) for v in masked_videos], dim=0)
         masks = torch.stack([_pad(v) for v in masks], dim=0)
         return videos, masked_videos, masks
-
-
-def _describe_tensor(name, tensor):
-    tensor = tensor.detach().cpu()
-    flat = tensor.reshape(-1)
-    stats = {
-        "shape": tuple(tensor.shape),
-        "dtype": str(tensor.dtype),
-        "min": float(flat.min()),
-        "max": float(flat.max()),
-        "mean": float(flat.mean()),
-    }
-    sample_values = flat[:5].tolist()
-    print(
-        f"[{name}] shape={stats['shape']} dtype={stats['dtype']} "
-        f"min={stats['min']:.4f} max={stats['max']:.4f} mean={stats['mean']:.4f}"
-    )
-    print(f"    sample={sample_values}")
-
-
-def _inspect_loader(loader, label):
-    if loader is None:
-        print(f"[{label}] loader not configured")
-        return
-    try:
-        batch = next(iter(loader))
-    except StopIteration:
-        print(f"[{label}] loader is empty")
-        return
-
-    video, masked, mask = batch
-    print(f"[{label}] batch size={video.shape[0]}")
-    _describe_tensor(f"{label}/video", video)
-    _describe_tensor(f"{label}/masked", masked)
-    _describe_tensor(f"{label}/mask", mask)
-
-
-if __name__ == "__main__":
-    CONFIG_PATH = Path(
-        "/home/NAS/homes/brick-10015/P2I-GAN-benchmark/p2igan_bench/config/p2igan_baseline.json"
-    )
-    if not CONFIG_PATH.is_file():
-        raise FileNotFoundError(f"Config file not found: {CONFIG_PATH}")
-
-    with CONFIG_PATH.open("r", encoding="utf-8") as f:
-        cfg = json.load(f)
-
-    data_module = P2IDataModule(cfg)
-
-    print("==== Inspecting train loader ====")
-    _inspect_loader(data_module.train_dataloader(), "train")
-
-    print("==== Inspecting validation loader ====")
-    _inspect_loader(data_module.val_dataloader(), "valid")
-
-    print("==== Inspecting test loader ====")
-    _inspect_loader(data_module.test_dataloader(), "test")

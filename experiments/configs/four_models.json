@@ -1,0 +1,55 @@
+{
+  "experiment_name": "p2igan_four_model_uncertainty",
+  "description": "Fair comparison under a shared test set; calibration stores must be independent.",
+  "save_dir": "experiments/results",
+  "evaluation_region": "missing",
+  "crop_size": 128,
+  "bootstrap_replicates": 1000,
+  "energy_score_pair_samples": 128,
+  "energy_score_max_points": 16384,
+  "require_aligned_events": true,
+  "alignment_check_events": 3,
+  "require_raw_members": true,
+  "methods": {
+    "M1-joint": {
+      "path": "inference/four_models/p2igan_joint.zarr",
+      "calibration_path": null,
+      "group": "in-domain",
+      "model_variant": "p2igan_joint",
+      "uncertainty_kind": "aleatoric",
+      "secondary_kind": "none",
+      "loss_profile": "weighted_l1+gaussian_nll+field_gan+joint_gan",
+      "expected_raw_members": 1
+    },
+    "M2-decoder-ensemble": {
+      "path": "inference/four_models/p2igan_decoder_ensemble.zarr",
+      "calibration_path": null,
+      "group": "in-domain",
+      "model_variant": "p2igan_decoder_ensemble",
+      "uncertainty_kind": "between_decoder",
+      "secondary_kind": "between_decoder",
+      "loss_profile": "weighted_l1+member_nll+crps+field_gan",
+      "expected_raw_members": 4
+    },
+    "M3-mc-dropout": {
+      "path": "inference/four_models/p2igan_mc_dropout.zarr",
+      "calibration_path": null,
+      "group": "in-domain",
+      "model_variant": "p2igan_mc_dropout",
+      "uncertainty_kind": "mc_dropout",
+      "secondary_kind": "mc_dropout",
+      "loss_profile": "weighted_l1+member_nll+field_gan",
+      "expected_raw_members": 16
+    },
+    "M4-latent-comod": {
+      "path": "inference/four_models/p2igan_latent_comod.zarr",
+      "calibration_path": null,
+      "group": "in-domain",
+      "model_variant": "p2igan_latent_comod",
+      "uncertainty_kind": "latent_style",
+      "secondary_kind": "latent_style",
+      "loss_profile": "weighted_l1+mixture_nll+multiscale_energy+field_gan",
+      "expected_raw_members": 16
+    }
+  }
+}

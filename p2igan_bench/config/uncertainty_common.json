@@ -1,0 +1,114 @@
+{
+  "seed": 2024,
+  "device": "cuda:0",
+  "performance": {
+    "amp": true,
+    "amp_dtype": "bfloat16",
+    "fused_adam": true,
+    "allow_tf32": true,
+    "cudnn_benchmark": true,
+    "matmul_precision": "high"
+  },
+  "model": {
+    "in_channels": 1,
+    "out_channels": 1,
+    "base_channels": 64,
+    "num_res": 4,
+    "stack_version": "stable_residual_v1",
+    "residual_scale": 0.1,
+    "residual_norm_groups": 8,
+    "output_activation": "sigmoid",
+    "preserve_observations": true
+  },
+  "discriminator": {
+    "field_enabled": true,
+    "joint_enabled": false
+  },
+  "data": {
+    "train": {
+      "data_root": "/home/NAS/house/brick-10015/Nimrod_2d_data/NIMROD_Train_datasets_sti/train",
+      "w": 128,
+      "h": 128,
+      "sample_length": 16,
+      "mask": {
+        "type": "stis",
+        "keep": 4,
+        "block_sizes": [10],
+        "interval": [2, 3, 4, 5, 6],
+        "file": "/home/NAS/homes/brick-10015/INGAN/core/rain_gauge_mask_1024_train.txt"
+      }
+    },
+    "valid": {
+      "data_root": "/home/NAS/house/brick-10015/Nimrod_2d_data/NIMROD_Train_datasets_sti/test",
+      "shuffle": false
+    },
+    "test": {
+      "data_root": "/home/NAS/house/brick-10015/Nimrod_2d_data/NIMROD_Train_datasets_sti/val",
+      "w": 128,
+      "h": 128,
+      "mask": {
+        "type": "stis",
+        "keep": 4,
+        "block_sizes": [10],
+        "interval": [2, 3, 4, 5, 6],
+        "file": "/home/NAS/homes/brick-10015/INGAN/core/rain_gauge_mask_1024_train.txt"
+      },
+      "shuffle": false
+    }
+  },
+  "loss": {
+    "beta": 0.0,
+    "lambda_w": 1.0,
+    "lambda_pm": 0.01,
+    "pm_omega": 10.0,
+    "lambda_adv_field": 0.01,
+    "lambda_adv_joint": 0.0,
+    "lambda_crps": 0.0,
+    "lambda_energy": 0.0,
+    "lambda_uncertainty_temporal": 0.0,
+    "gan_loss": "hinge",
+    "logvar_clamp_min": -10.0,
+    "logvar_clamp_max": 8.0
+  },
+  "schedule": {
+    "distribution_start": 0.10,
+    "adversarial_start": 0.40,
+    "variant_start": 0.70
+  },
+  "uncertainty": {
+    "train_samples": 4,
+    "val_samples": 8,
+    "predict_samples": 16,
+    "ensemble_size": 48,
+    "correlated_noise": {"enabled": true, "temporal_mode": "per_frame"}
+  },
+  "train": {
+    "optimizer": {"type": "Adam", "beta1": 0.0, "beta2": 0.99, "lr": 0.0001},
+    "discriminator_optimizer": {"type": "Adam", "beta1": 0.0, "beta2": 0.99, "lr": 0.0001},
+    "batch_size": 4,
+    "num_workers": 8,
+    "pin_memory": true,
+    "persistent_workers": true,
+    "prefetch_factor": 3,
+    "drop_last": true,
+    "accumulate_steps": 1,
+    "grad_clip_norm": 1.0,
+    "log_step": 100,
+    "max_epochs": 300,
+    "auto_resume": true,
+    "use_validation": true
+  },
+  "monitoring": {
+    "fail_on_nonfinite": true,
+    "visualize_every": 10,
+    "visualize_samples": 1,
+    "visualize_timesteps": [0, 4, 8, 12, 15],
+    "visualize_members": 8,
+    "checkpoint_every": 5,
+    "best_min_delta": 0.00001,
+    "activation_warmup_steps": 20,
+    "max_activation_abs": 1000.0,
+    "log_checkpoint_artifact": true
+  },
+  "mlflow": {"enabled": true, "tracking_uri": null}
+}
