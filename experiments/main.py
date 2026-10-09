@@ -1,4 +1,4 @@
-"""Run the three uncertainty-aware evaluation experiments."""
+"""Run the uncertainty-aware evaluation experiments."""
 
 from __future__ import annotations
 
@@ -12,6 +12,7 @@ from .config import build_config
 from .exp1 import run_exp1, scorecard_lines
 from .exp2 import run_exp2
 from .exp3 import run_exp3
+from .exp4 import run_exp4
 from .io import ensure_dir, load_uncertainty_store, save_config_snapshot, save_json, save_text
 
 
@@ -140,6 +141,13 @@ def main(args=None) -> None:
         results = run_exp3(stores, cfg, str(output))
         save_json(str(output / "metrics.json"), results)
         print(f"[EXP-3] stress/utility results saved to {output}")
+
+    if cfg.run_exp4:
+        output = output_root / "exp4_animations"
+        ensure_dir(str(output))
+        results = run_exp4(stores, cfg, str(output))
+        save_json(str(output / "manifest.json"), results)
+        print(f"[EXP-4] animated event visualizations saved to {output}")
 
 
 if __name__ == "__main__":

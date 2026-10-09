@@ -121,10 +121,10 @@ python scripts/infer.py \
 ```text
 target, masked_input, mask
 mean, aleatoric_std, secondary_std, predictive_std
-member_mean, member_logvar, ensemble
+member_mean, member_logvar
 ```
 
-預設由模型 raw members 與 aleatoric variance 產生 48 個具空間相關 noise 的 ensemble。使用 `--ensemble-size 0` 可只保留統計量與 raw members。
+推理只保存模型的 raw members 與 log-variance，不再額外加入人工空間 noise。評估時將兩者視為等權 Gaussian mixture，解析計算 NLL、CRPS、coverage 與 PIT。
 
 目前 test loader 固定 `batch_size=1`。`--predict-samples` 只會改變 M3、M4、M5 的抽樣數；M1 固定 1 個輸出，M2 固定使用 config 的 `num_heads`。
 

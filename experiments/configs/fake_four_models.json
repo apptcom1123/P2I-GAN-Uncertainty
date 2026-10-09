@@ -5,8 +5,7 @@
   "crop_size": null,
   "bootstrap_replicates": 50,
   "max_scatter_points": 5000,
-  "energy_score_pair_samples": 32,
-  "energy_score_max_points": 4096,
+  "distribution_score_max_points": 4096,
   "alignment_check_events": 4,
   "methods": {
     "M1-joint": {

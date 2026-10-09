@@ -68,17 +68,12 @@ def _event(variant: str, event_seed: int, time_steps: int, size: int):
     predictive_std = np.sqrt(aleatoric_std ** 2 + secondary_std ** 2)
     member_logvar = np.log(np.maximum((aleatoric_std / 255.0) ** 2, 1e-8))
     member_logvar = np.repeat(member_logvar[None], members_count, axis=0)
-    ensemble = []
-    for index in range(24):
-        center = member_mean[index % members_count]
-        sample = np.clip(center + _correlated_noise(rng, target.shape, 1.0) * aleatoric_std, 0, 255)
-        ensemble.append(mask * target + (1 - mask) * sample)
     arrays = {
         "target": target[:, None], "masked_input": (target * mask)[:, None],
         "mask": mask[:, None], "mean": mean[:, None],
         "aleatoric_std": aleatoric_std[:, None], "secondary_std": secondary_std[:, None],
         "predictive_std": predictive_std[:, None], "member_mean": member_mean[:, :, None],
-        "member_logvar": member_logvar[:, :, None], "ensemble": np.asarray(ensemble)[:, :, None],
+        "member_logvar": member_logvar[:, :, None],
     }
     if secondary_kind in {"between_decoder", "mc_dropout", "mc_dropout_condition"}:
         arrays["epistemic_std"] = arrays["secondary_std"]

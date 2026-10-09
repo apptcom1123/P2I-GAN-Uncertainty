@@ -81,15 +81,17 @@ def _evaluate_method(store: Mapping[str, object], cfg) -> Dict[str, object]:
 
         if remaining <= 0:
             continue
-        if "ensemble" in event and event["ensemble"].shape[0] >= 2:
-            ensemble = convert_rain(event["ensemble"], cfg.encoded_to_mmhr, cfg.encoding_divisor)
-            total_u = np.std(ensemble[:, selector], axis=0)[valid]
-        else:
-            total_u = event["predictive_std"][selector][valid]
-        au = event.get("aleatoric_std", event["predictive_std"])[selector][valid]
-        eu = event.get(
+        center_encoded = event["mean"][selector][valid]
+        def local_std(std):
+            encoded_std = std[selector][valid]
+            return convert_rain(
+                center_encoded + encoded_std, cfg.encoded_to_mmhr, cfg.encoding_divisor
+            ) - convert_rain(center_encoded, cfg.encoded_to_mmhr, cfg.encoding_divisor)
+        total_u = local_std(event["predictive_std"])
+        au = local_std(event.get("aleatoric_std", event["predictive_std"]))
+        eu = local_std(event.get(
             "secondary_std", event.get("epistemic_std", np.zeros_like(event["predictive_std"]))
-        )[selector][valid]
+        ))
         sample_count = min(remaining, absolute.size)
         indices = rng.choice(absolute.size, size=sample_count, replace=False)
         errors.append(absolute[indices])
@@ -117,8 +119,8 @@ def _evaluate_method(store: Mapping[str, object], cfg) -> Dict[str, object]:
         "sample_size": int(error.size),
         "bad_error_threshold": bad_threshold,
         "spearman_predictive": _rank_correlation(total_u, error),
-        "spearman_aleatoric_encoded": _rank_correlation(au, error),
-        "spearman_secondary_encoded": _rank_correlation(eu, error),
+        "spearman_aleatoric": _rank_correlation(au, error),
+        "spearman_secondary": _rank_correlation(eu, error),
     }
     utility.update(_ranking_metrics(total_u, error >= bad_threshold))
     utility["risk_coverage"] = _risk_curves(error, total_u, cfg.risk_coverages)

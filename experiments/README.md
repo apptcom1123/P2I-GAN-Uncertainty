@@ -3,26 +3,31 @@
 The experiments evaluate the Zarr format written by `scripts/infer.py`. Each
 event must contain `target`, `mask`, `mean`, `predictive_std`, and may also
 contain `aleatoric_std`, `secondary_std`, `masked_input`, raw `member_mean`,
-raw `member_logvar`, and `ensemble`. `epistemic_std` is retained as a semantic
-alias for decoder-ensemble, MC-dropout, and condition-routed MC-dropout stores.
+raw `member_logvar`. `epistemic_std` is retained as a semantic
+alias for decoder-ensemble, MC-dropout, condition-routed MC-dropout, and BNN stores.
 
 ## Design
 
 - **EXP-1 — scorecard:** MAE/RMSE/bias/SSIM, rainfall-threshold scores, FSS,
-  predictive/aleatoric Gaussian NLL, ensemble CRPS, sampled multivariate Energy
-  Score, spread-skill ratio, interval coverage/width/Winkler score, uncertainty
+  predictive/aleatoric Gaussian NLL, analytic Gaussian-mixture CRPS/NLL,
+  spread-skill ratio, mixture interval coverage/width/Winkler score, uncertainty
   decomposition, and event-bootstrap 95% confidence intervals.
-- **EXP-2 — calibration:** coverage reliability, rank histogram,
+- **EXP-2 — calibration:** mixture-CDF coverage reliability, PIT histogram,
   uncertainty–error alignment, and spatial case studies. Optional variance
   scaling is fitted only when a separate `calibration_path` is configured.
 - **EXP-3 — stress and usefulness:** heavy-rain strata, bad-error AUROC/AUPRC,
   risk–coverage/AURC, aleatoric/secondary-spread alignment, and comparisons across any
   ablation or stress stores listed in `config.py`.
+- **EXP-4 — animated events:** two reproducibly sampled 30-frame clips per
+  configured event, combining forecast, uncertainty decomposition, and raw model
+  members into one overview GIF with fixed per-event colour scales.
 
 `mask=1` means observed. The default evaluation region is therefore `missing`,
 which measures interpolation pixels rather than copying performance at gauges.
-Ensembles are transformed member-by-member to mm/h before CRPS, coverage, and
-spread are computed; this is necessary because the rain encoding is nonlinear.
+No artificial predictive draws are generated. Probabilistic scores use the
+equally weighted Gaussian mixture defined by `member_mean` and `member_logvar`.
+CRPS/NLL remain in encoded space because the rain conversion is nonlinear;
+interval bounds are converted to mm/h only after mixture quantiles are found.
 
 ## Run
 
@@ -41,7 +46,7 @@ python scripts/infer.py \
 
 The evaluation manifest records model identity, uncertainty semantics, training
 loss profile, expected raw-member count, test store, independent calibration
-store, and scenario group. Edit
+store, scenario group, and EXP-4's selected events/time slices. Edit
 `experiments/configs/four_models.json` for real runs, then run:
 
 ```bash

@@ -11,6 +11,12 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from .io import convert_rain, ensure_dir, evaluation_mask
+from .distributions import (
+    deterministic_subsample,
+    mixture_intervals,
+    mixture_pit,
+    selected_components,
+)
 
 
 def fit_std_scale(store: Mapping[str, object], cfg) -> float:
@@ -27,50 +33,50 @@ def fit_std_scale(store: Mapping[str, object], cfg) -> float:
     return float(np.sqrt(total / max(count, 1)))
 
 
-def _scaled_ensemble(event: Mapping[str, np.ndarray], scale: float) -> np.ndarray:
-    samples = np.asarray(event["ensemble"], dtype=np.float64)
-    mean = np.asarray(event["mean"], dtype=np.float64)
-    return np.clip(mean[None, ...] + scale * (samples - mean[None, ...]), 0.0, 255.0)
-
-
 def _diagnostics(store: Mapping[str, object], cfg, scale: float = 1.0) -> Dict[str, object]:
     levels = np.asarray(cfg.coverage_levels, dtype=np.float64)
     covered = np.zeros(levels.size, dtype=np.float64)
     widths = np.zeros(levels.size, dtype=np.float64)
+    width_count = 0
     count = 0
-    rank_counts = None
+    rank_counts = np.zeros(int(cfg.pit_bins), dtype=np.int64)
     scatter_error, scatter_uncertainty = [], []
     event_mae: Dict[str, float] = {}
     rng = np.random.default_rng(cfg.bootstrap_seed)
 
     for event_name, event in store["events"].items():
-        if "ensemble" not in event or event["ensemble"].shape[0] < 2:
-            continue
         selector = evaluation_mask(event["mask"], cfg.evaluation_region)
-        truth = convert_rain(event["target"], cfg.encoded_to_mmhr, cfg.encoding_divisor)
-        prediction = convert_rain(event["mean"], cfg.encoded_to_mmhr, cfg.encoding_divisor)
-        ensemble_encoded = _scaled_ensemble(event, scale)
-        ensemble = convert_rain(ensemble_encoded, cfg.encoded_to_mmhr, cfg.encoding_divisor)
-        y, mu, draws = truth[selector], prediction[selector], ensemble[:, selector]
-        valid = np.isfinite(y) & np.isfinite(mu) & np.all(np.isfinite(draws), axis=0)
-        y, mu, draws = y[valid], mu[valid], draws[:, valid]
+        truth_encoded, means, stds = selected_components(event, selector, scale=scale)
+        y = convert_rain(truth_encoded, cfg.encoded_to_mmhr, cfg.encoding_divisor)
+        center_encoded = means.mean(axis=0)
+        mu = convert_rain(center_encoded, cfg.encoded_to_mmhr, cfg.encoding_divisor)
         if y.size == 0:
             continue
         event_mae[event_name] = float(np.mean(np.abs(mu - y)))
         count += y.size
+        pit = mixture_pit(truth_encoded, means, stds)
         for index, level in enumerate(levels):
             tail = 1.0 - level
-            lower, upper = np.quantile(draws, [tail / 2.0, 1.0 - tail / 2.0], axis=0)
-            covered[index] += np.sum((y >= lower) & (y <= upper))
-            widths[index] += np.sum(upper - lower)
+            covered[index] += np.sum((pit >= tail / 2.0) & (pit <= 1.0 - tail / 2.0))
+        sampled_y, sampled_means, sampled_stds = deterministic_subsample(
+            truth_encoded, means, stds, cfg.distribution_score_max_points,
+            cfg.bootstrap_seed,
+        )
+        sampled_intervals = mixture_intervals(
+            sampled_y, sampled_means, sampled_stds, levels,
+            lambda value: convert_rain(value, cfg.encoded_to_mmhr, cfg.encoding_divisor),
+        )
+        width_count += sampled_y.size
+        for index, level in enumerate(levels):
+            widths[index] += sampled_intervals[f"{level:.2f}"]["width"] * sampled_y.size
 
-        members = draws.shape[0]
-        if rank_counts is None:
-            rank_counts = np.zeros(members + 1, dtype=np.int64)
-        ranks = np.sum(draws < y[None, :], axis=0)
-        rank_counts += np.bincount(ranks, minlength=members + 1)
+        rank_counts += np.histogram(pit, bins=int(cfg.pit_bins), range=(0.0, 1.0))[0]
 
-        uncertainty = np.std(draws, axis=0)
+        predictive_std_encoded = np.sqrt(np.mean(stds ** 2 + means ** 2, axis=0) - center_encoded ** 2)
+        uncertainty = convert_rain(
+            center_encoded + predictive_std_encoded,
+            cfg.encoded_to_mmhr, cfg.encoding_divisor,
+        ) - mu
         absolute_error = np.abs(mu - y)
         remaining = max(0, cfg.max_scatter_points - sum(x.size for x in scatter_error))
         if remaining:
@@ -79,7 +85,9 @@ def _diagnostics(store: Mapping[str, object], cfg, scale: float = 1.0) -> Dict[s
             scatter_uncertainty.append(uncertainty[chosen])
 
     empirical = covered / max(count, 1)
-    width = widths / max(count, 1)
+    # Widths are evaluated on a deterministic subset because mixture quantiles
+    # require numerical inversion; coverage above uses every valid pixel via PIT.
+    width = widths / max(width_count, 1)
     errors = np.concatenate(scatter_error) if scatter_error else np.empty(0)
     uncertainty = np.concatenate(scatter_uncertainty) if scatter_uncertainty else np.empty(0)
     correlation = float("nan")
@@ -93,7 +101,7 @@ def _diagnostics(store: Mapping[str, object], cfg, scale: float = 1.0) -> Dict[s
         "empirical": empirical,
         "width": width,
         "calibration_error": float(np.mean(np.abs(empirical - levels))),
-        "rank_counts": rank_counts if rank_counts is not None else np.empty(0, dtype=int),
+        "rank_counts": rank_counts,
         "scatter_error": errors,
         "scatter_uncertainty": uncertainty,
         "spearman": correlation,
@@ -120,7 +128,7 @@ def _plot_rank_hist(all_diagnostics: Mapping[str, Mapping[str, object]], out_dir
         ranks = values["rank_counts"]
         ax.bar(np.arange(ranks.size), ranks / max(ranks.sum(), 1), color="#087f7b")
         ax.axhline(1.0 / max(ranks.size, 1), color="0.4", linestyle="--")
-        ax.set(title=label, xlabel="Ensemble rank", ylabel="Frequency")
+        ax.set(title=label, xlabel="Gaussian-mixture PIT bin", ylabel="Frequency")
     fig.savefig(os.path.join(out_dir, "rank_histogram.pdf"), dpi=200)
     plt.close(fig)
 
@@ -164,11 +172,10 @@ def _plot_cases(method: str, store: Mapping[str, object], diagnostics: Mapping[s
         truth = convert_rain(event["target"], cfg.encoded_to_mmhr, cfg.encoding_divisor)
         mean = convert_rain(event["mean"], cfg.encoded_to_mmhr, cfg.encoding_divisor)
         masked = convert_rain(event.get("masked_input", event["target"]), cfg.encoded_to_mmhr, cfg.encoding_divisor)
-        if "ensemble" in event:
-            ensemble = convert_rain(event["ensemble"], cfg.encoded_to_mmhr, cfg.encoding_divisor)
-            uncertainty = np.std(ensemble, axis=0)
-        else:
-            uncertainty = event["predictive_std"]
+        uncertainty = convert_rain(
+            event["mean"] + event["predictive_std"],
+            cfg.encoded_to_mmhr, cfg.encoding_divisor,
+        ) - mean
         frame = cfg.case_study_frame
         if frame is None:
             frame = int(np.argmax(np.mean(truth, axis=(1, 2))))

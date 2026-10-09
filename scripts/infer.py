@@ -17,7 +17,7 @@ import zarr
 
 from p2igan_bench.data.dataloader import P2IDataModule
 from p2igan_bench.models import UncertaintyOutput, build_generator
-from p2igan_bench.modules import enable_mc_dropout, generate_correlated_noise
+from p2igan_bench.modules import enable_mc_dropout
 
 
 def parse_args() -> argparse.Namespace:
@@ -29,9 +29,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output", type=Path, default=None, help="Only valid with one config")
     parser.add_argument("--output-dir", type=Path, default=Path("inference"))
     parser.add_argument("--predict-samples", type=int, default=None)
-    parser.add_argument("--ensemble-size", type=int, default=None)
     parser.add_argument("--device", default=None)
     parser.add_argument("--log-every", type=int, default=10)
+    parser.add_argument(
+        "--max-events", type=int, default=None,
+        help="Optionally stop after this many test events (useful for preliminary comparisons)",
+    )
     parser.add_argument("--overlap", type=int, default=12)
     parser.add_argument("--output-scale", type=float, default=255.0)
     parser.add_argument("--overwrite", action="store_true")
@@ -97,6 +100,8 @@ class UncertaintyInterpolationPredictor:
             raise RuntimeError("Test dataloader is not configured")
         self.network = build_generator(cfg).to(self.device)
         state = torch.load(checkpoint, map_location=self.device, weights_only=False)
+        self.checkpoint_epoch = state.get("epoch")
+        self.checkpoint_global_step = state.get("global_step")
         checkpoint_model = state.get("config", {}).get("model", {})
         checkpoint_variant = checkpoint_model.get("name")
         if checkpoint_variant and checkpoint_variant != self.variant:
@@ -117,11 +122,7 @@ class UncertaintyInterpolationPredictor:
         unc = cfg.get("uncertainty", {})
         data = cfg.get("data_loader") or cfg["data"]["train"]
         self.predict_samples = int(unc.get("predict_samples", 16))
-        self.ensemble_size = int(unc.get("ensemble_size", 48))
         self.window = int(data.get("sample_length", 16))
-        noise = unc.get("correlated_noise", {})
-        self.correlated = bool(noise.get("enabled", True))
-        self.temporal_mode = str(noise.get("temporal_mode", "per_frame"))
 
     def _forward(self, masked, masks, count, sample_seeds=None) -> UncertaintyOutput:
         members = count if self.variant in {
@@ -135,7 +136,7 @@ class UncertaintyInterpolationPredictor:
                 sample_seeds=sample_seeds,
             )
 
-    def predict_event(self, target, masked, masks, predict_samples, ensemble_size, overlap):
+    def predict_event(self, target, masked, masks, predict_samples, overlap):
         event_len, step = target.shape[1], max(1, self.window - overlap)
         member_sum = logvar_sum = None
         event_sample_seeds = None
@@ -175,19 +176,6 @@ class UncertaintyInterpolationPredictor:
         secondary_var = members.var(0, unbiased=False)
         predictive_var = aleatoric_var + secondary_var
 
-        if ensemble_size:
-            indices = torch.arange(ensemble_size, device=self.device) % members.shape[0]
-            base = members[indices]
-            sigma = torch.exp(0.5 * member_logvar[indices])
-            if self.correlated:
-                noise = generate_correlated_noise(masked[0], num_members=ensemble_size,
-                                                  temporal_mode=self.temporal_mode)
-            else:
-                noise = torch.randn_like(base)
-            ensemble = (base + noise * sigma).clamp(0.0, 1.0)
-            ensemble = masks[0].unsqueeze(0) * masked[0].unsqueeze(0) + (1 - masks[0].unsqueeze(0)) * ensemble
-        else:
-            ensemble = members.new_empty((0, *mean.shape))
         secondary_name = "epistemic_std" if self.variant in {
             "p2igan_bnn_joint", "p2igan_decoder_ensemble", "p2igan_mc_dropout",
             "p2igan_condition_comod",
@@ -197,7 +185,7 @@ class UncertaintyInterpolationPredictor:
             "aleatoric_std": aleatoric_var.clamp_min(1e-6).sqrt(),
             "secondary_std": secondary_var.clamp_min(0).sqrt(),
             "predictive_std": predictive_var.clamp_min(1e-6).sqrt(),
-            "member_mean": members, "member_logvar": member_logvar, "ensemble": ensemble,
+            "member_mean": members, "member_logvar": member_logvar,
         }
         result[secondary_name] = result["secondary_std"]
         return result
@@ -209,19 +197,24 @@ def run_one(config_path: Path, parsed, output_path: Path):
         cfg.setdefault("data", {}).setdefault("test", {})["data_root"] = str(parsed.data_root)
     checkpoint = resolve_checkpoint(cfg, parsed.checkpoint, parsed.model_dir)
     predictor = UncertaintyInterpolationPredictor(cfg, checkpoint, parsed.device)
+    if parsed.max_events is not None and parsed.max_events < 1:
+        raise ValueError("max_events must be >= 1 when provided")
     if output_path.exists():
         if not parsed.overwrite:
             raise FileExistsError(output_path)
         shutil.rmtree(output_path)
     group = zarr.open_group(str(output_path), mode="w")
     predict_samples = predictor.predict_samples if parsed.predict_samples is None else parsed.predict_samples
-    ensemble_size = predictor.ensemble_size if parsed.ensemble_size is None else parsed.ensemble_size
-    if predict_samples < 1 or ensemble_size < 0:
-        raise ValueError("predict_samples must be >= 1 and ensemble_size must be >= 0")
+    if predict_samples < 1:
+        raise ValueError("predict_samples must be >= 1")
     group.attrs.update({"config_path": str(config_path), "checkpoint": str(checkpoint),
                         "model_variant": predictor.variant, "predict_samples": predict_samples,
-                        "ensemble_size": ensemble_size, "value_scale": parsed.output_scale,
+                        "value_scale": parsed.output_scale,
                         "raw_members_saved": True,
+                        "probabilistic_representation": "equal_weight_gaussian_mixture",
+                        "checkpoint_epoch": predictor.checkpoint_epoch,
+                        "checkpoint_global_step": predictor.checkpoint_global_step,
+                        "max_events": parsed.max_events,
                         "secondary_kind": getattr(predictor.network, "secondary_kind", "unknown"),
                         "member_logvar_scale": 1.0,
                         "model_config_json": json.dumps(cfg.get("model", {}), sort_keys=True),
@@ -229,9 +222,12 @@ def run_one(config_path: Path, parsed, output_path: Path):
     started = time.time()
     dataset = predictor.loader.dataset
     for index, batch in enumerate(predictor.loader):
+        if parsed.max_events is not None and index >= parsed.max_events:
+            break
         target, masked, masks = prepare_batch(batch, predictor.device)
-        result = predictor.predict_event(target, masked, masks, predict_samples, ensemble_size,
-                                         max(0, parsed.overlap))
+        result = predictor.predict_event(
+            target, masked, masks, predict_samples, max(0, parsed.overlap)
+        )
         event = group.create_group(f"event_{index + 1:02d}")
         for key, value in result.items():
             _write(event, key, value, parsed.output_scale)

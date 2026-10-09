@@ -29,6 +29,8 @@ from p2igan_bench.modules import (
     ActivationMonitor,
     QUALITY_METRIC_KEYS,
     calibration_figure,
+    calibration_figure_from_values,
+    calibration_values,
     enable_mc_dropout,
     gan_loss,
     members_figure,
@@ -317,6 +319,9 @@ class UncertaintyInterpolationTrainer:
             int(value) for value in monitoring.get("visualize_timesteps", [0, 4, 8, 12, 15])
         )
         self.visualize_members = max(1, int(monitoring.get("visualize_members", 8)))
+        self.calibration_samples_per_batch = max(
+            1, int(monitoring.get("calibration_samples_per_batch", 8192))
+        )
         self.log_checkpoint_artifact = bool(monitoring.get("log_checkpoint_artifact", True))
         self.checkpoint_every = max(1, int(monitoring.get("checkpoint_every", 5)))
         self.best_min_delta = max(0.0, float(monitoring.get("best_min_delta", 1e-5)))
@@ -324,6 +329,7 @@ class UncertaintyInterpolationTrainer:
         self.max_activation_abs = float(monitoring.get("max_activation_abs", 1000.0))
         self.activation_monitor = ActivationMonitor(self.network)
         self._fixed_validation_batch = None
+        self._validation_calibration_values = None
 
         # Set up directories for saving model checkpoints and initialize training state
         self.save_dir = Path(cfg.get("save_dir", f"weights/{self.variant}"))
@@ -577,6 +583,15 @@ class UncertaintyInterpolationTrainer:
         run_started = time.perf_counter()
         previous_end = run_started
         data_wait_seconds = 0.0
+        collect_calibration = bool(
+            not training
+            and max_batches is None
+            and mlflow.active_run()
+            and self.visualize_every > 0
+            and (epoch == self.start_epoch or epoch % self.visualize_every == 0)
+        )
+        calibration_error_chunks = []
+        calibration_std_chunks = []
         if training:
             self.optimizer.zero_grad(set_to_none=True)
             if self.disc_optimizer is not None:
@@ -661,6 +676,16 @@ class UncertaintyInterpolationTrainer:
                         reason=f"model output contains {int(output_health['nonfinite_count'])} NaN/Inf values",
                     )
                 values.update(quality_metrics(target, out.mean, out.predictive_var, masks))
+                if collect_calibration:
+                    error_values, std_values = calibration_values(
+                        target,
+                        out.mean,
+                        out.predictive_var,
+                        masks,
+                        maximum=self.calibration_samples_per_batch,
+                    )
+                    calibration_error_chunks.append(error_values)
+                    calibration_std_chunks.append(std_values)
                 values["output_abs_max"] = target.new_tensor(output_health["output_abs_max"])
                 values["nonfinite_count"] = target.new_tensor(output_health["nonfinite_count"])
             values["gradient_norm"] = target.new_zeros(())
@@ -702,16 +727,22 @@ class UncertaintyInterpolationTrainer:
                     self.global_step += 1
             self._requires_grad(self.discriminators, True)
             values.update(disc_values)
+            batch_weight = int(target.shape[0])
             for key in METRIC_KEYS:
                 if key in values:
-                    totals[key] += float(values[key].detach())
-                    metric_counts[key] += 1
+                    # Losses and scientific metrics are batch means. Weight by
+                    # sample count so the smaller final validation batch does
+                    # not receive the same influence as a complete batch.
+                    totals[key] += float(values[key].detach()) * batch_weight
+                    metric_counts[key] += batch_weight
             batches += 1
             if training and should_step and self.global_step % self.log_every == 0:
                 logging.info("step=%d total=%.5f nll=%.5f kl=%.5f adv_field=%.5f",
-                             self.global_step, totals["loss"] / batches, totals["nll"] / batches,
-                             totals["kl"] / batches,
-                             totals["gen_adv_field"] / batches)
+                             self.global_step,
+                             totals["loss"] / max(1, metric_counts["loss"]),
+                             totals["nll"] / max(1, metric_counts["nll"]),
+                             totals["kl"] / max(1, metric_counts["kl"]),
+                             totals["gen_adv_field"] / max(1, metric_counts["gen_adv_field"]))
                 if mlflow.active_run():
                     scalar_values = {
                         key: float(value.detach())
@@ -749,6 +780,14 @@ class UncertaintyInterpolationTrainer:
         })
         result["l2_penalty"] = self._l2_penalty_value()
         result["full_objective"] = result["loss"] + result["l2_penalty"]
+        if not training:
+            self._validation_calibration_values = (
+                (
+                    torch.cat(calibration_error_chunks),
+                    torch.cat(calibration_std_chunks),
+                )
+                if calibration_error_chunks else None
+            )
         return result
 
     def _save(self, epoch, path):
@@ -839,7 +878,18 @@ class UncertaintyInterpolationTrainer:
                     f"visualizations/epoch_{epoch:04d}/sample_{sample:02d}_members.png",
                 )
                 plt.close(member_panel)
-        calibration = calibration_figure(target, output.mean, output.predictive_var, masks)
+        if self._validation_calibration_values is None:
+            calibration = calibration_figure(target, output.mean, output.predictive_var, masks)
+        else:
+            error_values, std_values = self._validation_calibration_values
+            calibration = calibration_figure_from_values(
+                error_values,
+                std_values,
+                source_label=(
+                    f"Validation reliability: {len(self.val_loader.dataset)} events, "
+                    f"{error_values.numel():,} sampled hidden pixels"
+                ),
+            )
         mlflow.log_figure(
             calibration,
             f"calibration/epoch_{epoch:04d}_reliability.png",

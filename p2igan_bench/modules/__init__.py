@@ -6,6 +6,8 @@ from .monitoring import (
     ActivationMonitor,
     QUALITY_METRIC_KEYS,
     calibration_figure,
+    calibration_figure_from_values,
+    calibration_values,
     members_figure,
     prediction_figure,
     quality_metrics,
@@ -13,8 +15,6 @@ from .monitoring import (
 )
 from .uncertainty import (
     enable_mc_dropout,
-    generate_correlated_noise,
-    generate_ensemble_from_uncertainty,
     member_gaussian_nll,
     summarize_uncertainty,
 )
@@ -28,13 +28,13 @@ __all__ = [
     "ActivationMonitor",
     "QUALITY_METRIC_KEYS",
     "calibration_figure",
+    "calibration_figure_from_values",
+    "calibration_values",
     "members_figure",
     "prediction_figure",
     "quality_metrics",
     "tensor_finite_summary",
     "enable_mc_dropout",
-    "generate_correlated_noise",
-    "generate_ensemble_from_uncertainty",
     "member_gaussian_nll",
     "summarize_uncertainty",
 ]

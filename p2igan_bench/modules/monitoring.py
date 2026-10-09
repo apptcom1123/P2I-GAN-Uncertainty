@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Dict, Iterable, Sequence
+from typing import Dict, Iterable, Optional, Sequence
 
 import matplotlib
 
@@ -326,13 +326,58 @@ def calibration_figure(
     predictive_var: torch.Tensor,
     observation_mask: torch.Tensor,
 ):
-    """Build interval-coverage and predicted-std versus RMSE diagnostics."""
+    """Build calibration diagnostics for one in-memory batch."""
+
+    error_values, std_values = calibration_values(
+        target, prediction, predictive_var, observation_mask
+    )
+    return calibration_figure_from_values(error_values, std_values)
+
+
+def calibration_values(
+    target: torch.Tensor,
+    prediction: torch.Tensor,
+    predictive_var: torch.Tensor,
+    observation_mask: torch.Tensor,
+    *,
+    maximum: Optional[int] = None,
+):
+    """Return hidden-region absolute errors and predicted standard deviations.
+
+    ``maximum`` applies deterministic, evenly spaced subsampling. This allows
+    every validation batch to contribute without retaining every pixel from
+    the complete validation set in host memory.
+    """
 
     error = (prediction.detach().float() - target.detach().float()).abs()
     std = predictive_var.detach().float().clamp_min(1e-12).sqrt()
     hidden = observation_mask.detach() < 0.5
-    error_values = _selected_values(error, hidden).cpu()
-    std_values = _selected_values(std, hidden).cpu()
+    error_values = _selected_values(error, hidden)
+    std_values = _selected_values(std, hidden)
+    if maximum is not None and maximum > 0 and error_values.numel() > maximum:
+        indices = torch.linspace(
+            0,
+            error_values.numel() - 1,
+            steps=maximum,
+            device=error_values.device,
+        ).long()
+        error_values = error_values[indices]
+        std_values = std_values[indices]
+    return error_values.cpu(), std_values.cpu()
+
+
+def calibration_figure_from_values(
+    error_values: torch.Tensor,
+    std_values: torch.Tensor,
+    *,
+    source_label: Optional[str] = None,
+):
+    """Build calibration diagnostics from pooled validation samples."""
+
+    error_values = error_values.detach().float().flatten().cpu()
+    std_values = std_values.detach().float().flatten().clamp_min(1e-12).cpu()
+    if error_values.numel() == 0 or std_values.numel() != error_values.numel():
+        raise ValueError("calibration values must be non-empty and have matching sizes")
 
     nominal = []
     empirical = []
@@ -373,6 +418,8 @@ def calibration_figure(
     )
     axes[1].grid(alpha=0.25)
     axes[1].legend()
+    if source_label:
+        figure.suptitle(source_label)
     return figure
 
 
@@ -380,6 +427,8 @@ __all__ = [
     "ActivationMonitor",
     "QUALITY_METRIC_KEYS",
     "calibration_figure",
+    "calibration_figure_from_values",
+    "calibration_values",
     "members_figure",
     "prediction_figure",
     "quality_metrics",

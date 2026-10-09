@@ -1,0 +1,38 @@
+{
+  "experiment_name": "bnn_best_vs_latest_preliminary",
+  "description": "Preliminary, aligned comparison of the epoch-47 best and epoch-150 latest M5 checkpoints.",
+  "save_dir": "experiments/results",
+  "run_exp1": true,
+  "run_exp2": true,
+  "run_exp3": true,
+  "run_exp4": true,
+  "visualization_events": ["event_01", "event_03"],
+  "visualization_segment_starts": [],
+  "visualization_random_segments": 2,
+  "visualization_segment_length": 30,
+  "visualization_seed": 2024,
+  "visualization_member_indices": [0, 1, 2, 3],
+  "visualization_frame_duration_ms": 4000,
+  "bootstrap_replicates": 200,
+  "distribution_score_max_points": 16384,
+  "methods": {
+    "M5-best-e047": {
+      "path": "inference/bnn_best_latest_preliminary/best_e047.zarr",
+      "group": "checkpoint",
+      "model_variant": "p2igan_bnn_joint",
+      "uncertainty_kind": "bnn_weight",
+      "secondary_kind": "bnn_weight",
+      "loss_profile": "member_nll+bayesian_kl+temporal_kl+uncertainty_smoothness",
+      "expected_raw_members": 16
+    },
+    "M5-latest-e150": {
+      "path": "inference/bnn_best_latest_preliminary/latest_e150.zarr",
+      "group": "checkpoint",
+      "model_variant": "p2igan_bnn_joint",
+      "uncertainty_kind": "bnn_weight",
+      "secondary_kind": "bnn_weight",
+      "loss_profile": "member_nll+bayesian_kl+temporal_kl+uncertainty_smoothness",
+      "expected_raw_members": 16
+    }
+  }
+}

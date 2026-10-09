@@ -14,9 +14,9 @@ import numpy as np
 FIELD_KEYS = (
     "target", "masked_input", "mask", "mean", "aleatoric_std",
     "secondary_std", "epistemic_std", "style_std", "proxy_secondary_std",
-    "predictive_std", "member_mean", "member_logvar", "ensemble",
+    "predictive_std", "member_mean", "member_logvar",
 )
-MEMBER_KEYS = {"ensemble", "member_mean", "member_logvar"}
+MEMBER_KEYS = {"member_mean", "member_logvar"}
 
 
 def ensure_thw(arr: np.ndarray) -> np.ndarray:

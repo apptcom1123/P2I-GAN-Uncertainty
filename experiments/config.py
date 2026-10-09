@@ -35,7 +35,7 @@ def _default_methods() -> Dict[str, MethodConfig]:
             uncertainty_kind="between_decoder",
             loss_profile="poisson_member_nll+temporal_kl+uncertainty_smoothness+field_gan",
             secondary_kind="between_decoder",
-            expected_raw_members=4,
+            expected_raw_members=8,
         ),
         "M3-mc-dropout": MethodConfig(
             path=f"{root}/p2igan_mc_dropout.zarr", model_variant="p2igan_mc_dropout",
@@ -62,6 +62,7 @@ class ExperimentConfig:
     run_exp1: bool = True
     run_exp2: bool = True
     run_exp3: bool = True
+    run_exp4: bool = False
     methods: Dict[str, MethodConfig] = field(default_factory=_default_methods)
 
     evaluation_region: str = "missing"
@@ -81,10 +82,19 @@ class ExperimentConfig:
     case_study_events: Tuple[str, ...] = ()
     case_study_frame: Optional[int] = None
     max_scatter_points: int = 50000
+    pit_bins: int = 20
+
+    # EXP-4 animated case studies. Empty starts select reproducible random clips.
+    visualization_events: Tuple[str, ...] = ("event_01",)
+    visualization_segment_starts: Tuple[int, ...] = ()
+    visualization_random_segments: int = 2
+    visualization_segment_length: int = 30
+    visualization_seed: int = 2024
+    visualization_member_indices: Tuple[int, ...] = (0, 1, 2, 3)
+    visualization_frame_duration_ms: int = 4000
 
     # Evaluation cost / integrity controls.
-    energy_score_pair_samples: int = 128
-    energy_score_max_points: int = 16384
+    distribution_score_max_points: int = 65536
     require_aligned_events: bool = True
     alignment_check_events: int = 3
     require_raw_members: bool = True
@@ -93,7 +103,8 @@ class ExperimentConfig:
 
 _TUPLE_FIELDS = {
     "rain_thresholds_mmhr", "coverage_levels", "fss_scales", "risk_coverages",
-    "case_study_events",
+    "case_study_events", "visualization_events", "visualization_segment_starts",
+    "visualization_member_indices",
 }
 
 

@@ -67,9 +67,7 @@
   "uncertainty": {
     "train_samples": 4,
     "val_samples": 8,
-    "predict_samples": 16,
-    "ensemble_size": 48,
-    "correlated_noise": {"enabled": true, "temporal_mode": "per_frame"}
+    "predict_samples": 16
   },
   "train": {
     "optimizer": {"type": "Adam", "beta1": 0.0, "beta2": 0.99, "lr": 0.0001},
@@ -83,7 +81,7 @@
     "accumulate_steps": 1,
     "grad_clip_norm": 1.0,
     "log_step": 100,
-    "max_epochs": 300,
+    "max_epochs": 150,
     "auto_resume": true,
     "use_validation": true
   },
@@ -91,6 +89,7 @@
     "fail_on_nonfinite": true,
     "visualize_every": 10,
     "visualize_samples": 1,
+    "calibration_samples_per_batch": 8192,
     "visualize_timesteps": [0, 4, 8, 12, 15],
     "visualize_members": 8,
     "checkpoint_every": 5,

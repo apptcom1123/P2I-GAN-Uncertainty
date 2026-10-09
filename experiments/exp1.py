@@ -2,12 +2,19 @@
 
 from __future__ import annotations
 
-from typing import Dict, Iterable, Mapping, Sequence
+from typing import Dict, Mapping, Sequence
 
 import numpy as np
 from scipy.ndimage import uniform_filter
 
 from .io import convert_rain, evaluation_mask
+from .distributions import (
+    deterministic_subsample,
+    mixture_crps,
+    mixture_intervals,
+    mixture_nll,
+    selected_components,
+)
 
 
 EPS = 1e-8
@@ -35,77 +42,6 @@ def fss(pred: np.ndarray, truth: np.ndarray, selector: np.ndarray, threshold: fl
     numerator = np.mean((pred_fraction[selector] - truth_fraction[selector]) ** 2)
     denominator = np.mean(pred_fraction[selector] ** 2 + truth_fraction[selector] ** 2)
     return float(1.0 - numerator / (denominator + EPS))
-
-
-def ensemble_crps(samples: np.ndarray, truth: np.ndarray, selector: np.ndarray) -> float:
-    """Empirical CRPS using an O(E log E) sorted-sample identity."""
-    selected = np.asarray(samples, dtype=np.float64)[:, selector]
-    observed = np.asarray(truth, dtype=np.float64)[selector]
-    finite = np.isfinite(observed) & np.all(np.isfinite(selected), axis=0)
-    selected = selected[:, finite]
-    observed = observed[finite]
-    if observed.size == 0:
-        return float("nan")
-    first = np.mean(np.abs(selected - observed[None, :]), axis=0)
-    ordered = np.sort(selected, axis=0)
-    members = ordered.shape[0]
-    coefficients = 2.0 * np.arange(1, members + 1) - members - 1.0
-    half_pairwise = np.sum(coefficients[:, None] * ordered, axis=0) / (members**2)
-    return float(np.mean(first - half_pairwise))
-
-
-def energy_score(samples: np.ndarray, truth: np.ndarray, selector: np.ndarray,
-                 max_pairs: int, max_points: int, seed: int) -> float:
-    """Sampled multivariate Energy Score over the selected spatio-temporal field."""
-    draws = np.asarray(samples, dtype=np.float64)[:, selector]
-    observed = np.asarray(truth, dtype=np.float64)[selector]
-    valid = np.isfinite(observed) & np.all(np.isfinite(draws), axis=0)
-    draws, observed = draws[:, valid], observed[valid]
-    if observed.size == 0:
-        return float("nan")
-    rng = np.random.default_rng(seed)
-    if observed.size > max_points:
-        chosen = rng.choice(observed.size, size=max_points, replace=False)
-        draws, observed = draws[:, chosen], observed[chosen]
-    normalizer = np.sqrt(observed.size)
-    accuracy = np.mean([
-        np.linalg.norm(member - observed) / normalizer for member in draws
-    ])
-    total_pairs = draws.shape[0] ** 2
-    pair_count = min(max(1, int(max_pairs)), total_pairs)
-    left = rng.integers(0, draws.shape[0], size=pair_count)
-    right = rng.integers(0, draws.shape[0], size=pair_count)
-    spread = np.mean([
-        np.linalg.norm(draws[i] - draws[j]) / normalizer for i, j in zip(left, right)
-    ])
-    return float(accuracy - 0.5 * spread)
-
-
-def interval_metrics(
-    samples: np.ndarray,
-    truth: np.ndarray,
-    selector: np.ndarray,
-    levels: Iterable[float],
-) -> Dict[str, Dict[str, float]]:
-    values = np.asarray(truth)[selector]
-    draws = np.asarray(samples)[:, selector]
-    valid = np.isfinite(values) & np.all(np.isfinite(draws), axis=0)
-    values, draws = values[valid], draws[:, valid]
-    result: Dict[str, Dict[str, float]] = {}
-    for level in levels:
-        tail = 1.0 - float(level)
-        lower, upper = np.quantile(draws, [tail / 2.0, 1.0 - tail / 2.0], axis=0)
-        covered = (values >= lower) & (values <= upper)
-        width = upper - lower
-        winkler = width.copy()
-        winkler += (2.0 / tail) * (lower - values) * (values < lower)
-        winkler += (2.0 / tail) * (values - upper) * (values > upper)
-        result[f"{level:.2f}"] = {
-            "coverage": float(np.mean(covered)),
-            "width": float(np.mean(width)),
-            "winkler": float(np.mean(winkler)),
-        }
-    return result
 
 
 def gaussian_nll(mean: np.ndarray, std: np.ndarray, truth: np.ndarray, selector: np.ndarray) -> float:
@@ -170,33 +106,39 @@ def evaluate_event(event: Mapping[str, np.ndarray], cfg) -> Dict[str, object]:
             metrics[f"FSS_{threshold:g}_{scale}x{scale}"] = fss(
                 prediction, truth, selector, threshold, scale
             )
-    if "ensemble" in event and event["ensemble"].shape[0] >= 2:
-        ensemble = convert_rain(event["ensemble"], cfg.encoded_to_mmhr, cfg.encoding_divisor)
-        metrics["CRPS"] = ensemble_crps(ensemble, truth, selector)
-        metrics["Energy_Score"] = energy_score(
-            ensemble, truth, selector, cfg.energy_score_pair_samples,
-            cfg.energy_score_max_points, cfg.bootstrap_seed
-        )
-        metrics["intervals"] = interval_metrics(ensemble, truth, selector, cfg.coverage_levels)
-        metrics["mean_predictive_std"] = float(np.mean(np.std(ensemble[:, selector], axis=0)))
-        ensemble_spread = float(np.sqrt(np.mean(np.var(ensemble[:, selector], axis=0))))
-        metrics["spread_skill_ratio"] = ensemble_spread / max(metrics["RMSE"], EPS)
-        ensemble_encoded = np.asarray(event["ensemble"][:, selector], dtype=np.float64)
-        metrics["ensemble_mean_consistency_RMSE_encoded"] = float(
-            np.sqrt(np.mean((ensemble_encoded.mean(axis=0) - event["mean"][selector]) ** 2))
-        )
-        metrics["ensemble_boundary_fraction"] = float(
-            np.mean((ensemble_encoded <= 0.0) | (ensemble_encoded >= 255.0))
-        )
-        if "member_mean" in event:
-            metrics["raw_member_spread_encoded"] = float(
-                np.mean(np.std(event["member_mean"][:, selector], axis=0))
-            )
-    else:
-        metrics["CRPS"] = float("nan")
-        metrics["Energy_Score"] = float("nan")
-        metrics["intervals"] = {}
-        metrics["mean_predictive_std"] = float("nan")
+    if "member_mean" not in event or "member_logvar" not in event:
+        raise ValueError("Analytic probabilistic scoring requires member_mean and member_logvar")
+    mixture_truth, mixture_means, mixture_stds = selected_components(event, selector)
+    metrics["Gaussian_Mixture_NLL_encoded"] = mixture_nll(
+        mixture_truth, mixture_means, mixture_stds
+    )
+    score_truth, score_means, score_stds = deterministic_subsample(
+        mixture_truth, mixture_means, mixture_stds,
+        cfg.distribution_score_max_points, cfg.bootstrap_seed,
+    )
+    metrics["Gaussian_Mixture_CRPS_encoded"] = mixture_crps(
+        score_truth, score_means, score_stds
+    )
+    metrics["distribution_score_points"] = int(score_truth.size)
+    metrics["intervals"] = mixture_intervals(
+        score_truth, score_means, score_stds, cfg.coverage_levels,
+        lambda value: convert_rain(value, cfg.encoded_to_mmhr, cfg.encoding_divisor),
+    )
+    metrics["mean_predictive_std_encoded"] = float(
+        np.mean(event["predictive_std"][selector])
+    )
+    predictive_spread_mmhr = convert_rain(
+        event["mean"][selector] + event["predictive_std"][selector],
+        cfg.encoded_to_mmhr, cfg.encoding_divisor,
+    ) - convert_rain(
+        event["mean"][selector], cfg.encoded_to_mmhr, cfg.encoding_divisor,
+    )
+    metrics["spread_skill_ratio"] = float(
+        np.sqrt(np.mean(predictive_spread_mmhr ** 2)) / max(metrics["RMSE"], EPS)
+    )
+    metrics["raw_member_spread_encoded"] = float(
+        np.mean(np.std(event["member_mean"][:, selector], axis=0))
+    )
     return metrics
 
 
@@ -252,10 +194,12 @@ def run_exp1(stores: Mapping[str, Mapping[str, object]], cfg) -> Dict[str, objec
 
 
 def scorecard_lines(results: Mapping[str, object]) -> Sequence[str]:
-    keys = ("MAE", "RMSE", "bias", "SSIM", "CRPS", "Energy_Score",
-            "Gaussian_NLL_encoded", "Aleatoric_NLL_encoded", "spread_skill_ratio",
-            "intervals.0.90.coverage", "intervals.0.90.width",
-            "ensemble_mean_consistency_RMSE_encoded")
+    keys = (
+        "MAE", "RMSE", "bias", "SSIM", "Gaussian_Mixture_CRPS_encoded",
+        "Gaussian_Mixture_NLL_encoded", "Gaussian_NLL_encoded",
+        "Aleatoric_NLL_encoded", "spread_skill_ratio",
+        "intervals.0.90.coverage", "intervals.0.90.width",
+    )
     lines = ["method\t" + "\t".join(keys)]
     for method, payload in results.items():
         summary = payload["summary"]
