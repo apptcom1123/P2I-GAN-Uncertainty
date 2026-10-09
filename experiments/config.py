@@ -27,25 +27,28 @@ def _default_methods() -> Dict[str, MethodConfig]:
         "M1-joint": MethodConfig(
             path=f"{root}/p2igan_joint.zarr", model_variant="p2igan_joint",
             uncertainty_kind="aleatoric", secondary_kind="none",
-            loss_profile="gaussian_nll+joint_gan",
+            loss_profile="gaussian_nll+temporal_kl+uncertainty_smoothness+field_gan",
             expected_raw_members=1,
         ),
         "M2-decoder-ensemble": MethodConfig(
             path=f"{root}/p2igan_decoder_ensemble.zarr", model_variant="p2igan_decoder_ensemble",
-            uncertainty_kind="between_decoder", loss_profile="member_nll+crps",
+            uncertainty_kind="between_decoder",
+            loss_profile="poisson_member_nll+temporal_kl+uncertainty_smoothness+field_gan",
             secondary_kind="between_decoder",
             expected_raw_members=4,
         ),
         "M3-mc-dropout": MethodConfig(
             path=f"{root}/p2igan_mc_dropout.zarr", model_variant="p2igan_mc_dropout",
-            uncertainty_kind="mc_dropout", loss_profile="member_nll",
+            uncertainty_kind="mc_dropout",
+            loss_profile="member_nll+l2+temporal_kl+uncertainty_smoothness+field_gan",
             secondary_kind="mc_dropout",
             expected_raw_members=16,
         ),
-        "M4-latent-comod": MethodConfig(
-            path=f"{root}/p2igan_latent_comod.zarr", model_variant="p2igan_latent_comod",
-            uncertainty_kind="latent_style", loss_profile="mixture_nll+energy",
-            secondary_kind="latent_style",
+        "M4-dropout-condition-comod": MethodConfig(
+            path=f"{root}/p2igan_condition_comod.zarr", model_variant="p2igan_condition_comod",
+            uncertainty_kind="mc_dropout_condition",
+            loss_profile="member_nll+l2+temporal_kl+uncertainty_smoothness+condition_experts+field_gan",
+            secondary_kind="mc_dropout_condition",
             expected_raw_members=16,
         ),
     }

@@ -22,6 +22,10 @@ PRECIPITATION_THRESHOLDS = (0.10, 0.20, 0.40)
 QUALITY_METRIC_KEYS = (
     "mae_hidden",
     "rmse_hidden",
+    "target_mean_hidden",
+    "prediction_mean_hidden",
+    "target_rain_fraction_0p1",
+    "prediction_rain_fraction_0p1",
     "error_std_correlation",
     "calibration_error",
     "coverage_90",
@@ -75,6 +79,14 @@ def quality_metrics(
     metrics: Dict[str, torch.Tensor] = {
         "mae_hidden": _masked_mean(error, hidden),
         "rmse_hidden": _masked_mean(squared_error, hidden).sqrt(),
+        "target_mean_hidden": _masked_mean(target, hidden),
+        "prediction_mean_hidden": _masked_mean(prediction, hidden),
+        "target_rain_fraction_0p1": _masked_mean(
+            (target >= PRECIPITATION_THRESHOLDS[0]).float(), hidden
+        ),
+        "prediction_rain_fraction_0p1": _masked_mean(
+            (prediction >= PRECIPITATION_THRESHOLDS[0]).float(), hidden
+        ),
     }
 
     selected_error = _selected_values(error, hidden)
@@ -193,13 +205,17 @@ def prediction_figure(
 
     valid_steps = [min(max(0, int(step)), target.shape[1] - 1) for step in timesteps]
     rows = (
-        ("masked input", masked, "viridis"),
-        ("target", target, "viridis"),
-        ("predicted mean", output.mean, "viridis"),
-        ("absolute error", (output.mean - target).abs(), "magma"),
-        ("aleatoric std", output.aleatoric_var.sqrt(), "magma"),
-        (f"{output.secondary_kind} std", output.secondary_var.sqrt(), "magma"),
-        ("predictive std", output.predictive_var.sqrt(), "magma"),
+        ("Masked input", masked, "viridis"),
+        ("Ground truth", target, "viridis"),
+        ("Predicted mean", output.mean, "viridis"),
+        ("Absolute error", (output.mean - target).abs(), "magma"),
+        ("Aleatoric std", output.aleatoric_var.sqrt(), "magma"),
+        (
+            f"{output.secondary_kind.replace('_', ' ').title()} std",
+            output.secondary_var.sqrt(),
+            "magma",
+        ),
+        ("Predictive std", output.predictive_var.sqrt(), "magma"),
     )
     rain_max = max(1e-6, float(target[sample].detach().float().max().cpu()))
     error_max = max(
@@ -227,13 +243,27 @@ def prediction_figure(
                 vmin=0.0,
                 vmax=image_max,
             )
-            axes[row_index, column].set_axis_off()
+            # ``set_axis_off()`` also hides the y-label. Keep the axis active
+            # while removing ticks and spines so every row remains explicit.
+            axes[row_index, column].tick_params(
+                left=False,
+                bottom=False,
+                labelleft=False,
+                labelbottom=False,
+            )
+            for spine in axes[row_index, column].spines.values():
+                spine.set_visible(False)
             if row_index == 0:
                 axes[row_index, column].set_title(f"t={timestep}")
             if column == 0:
-                axes[row_index, column].set_ylabel(label)
-                axes[row_index, column].yaxis.set_visible(True)
-                axes[row_index, column].set_yticks([])
+                axes[row_index, column].set_ylabel(
+                    label,
+                    rotation=0,
+                    ha="right",
+                    va="center",
+                    labelpad=16,
+                    fontweight="bold",
+                )
         figure.colorbar(last, ax=axes[row_index, :], fraction=0.012, pad=0.01)
     return figure
 
@@ -268,13 +298,25 @@ def members_figure(
                 vmin=0.0,
                 vmax=value_max,
             )
-            axes[member, column].set_axis_off()
+            axes[member, column].tick_params(
+                left=False,
+                bottom=False,
+                labelleft=False,
+                labelbottom=False,
+            )
+            for spine in axes[member, column].spines.values():
+                spine.set_visible(False)
             if member == 0:
                 axes[member, column].set_title(f"t={timestep}")
             if column == 0:
-                axes[member, column].set_ylabel(f"member {member}")
-                axes[member, column].yaxis.set_visible(True)
-                axes[member, column].set_yticks([])
+                axes[member, column].set_ylabel(
+                    f"Member {member + 1}",
+                    rotation=0,
+                    ha="right",
+                    va="center",
+                    labelpad=16,
+                    fontweight="bold",
+                )
     return figure
 
 

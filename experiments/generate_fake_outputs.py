@@ -15,7 +15,7 @@ VARIANTS = {
     "p2igan_joint": (1, "none", 5.0, 0.0),
     "p2igan_decoder_ensemble": (4, "between_decoder", 4.5, 3.5),
     "p2igan_mc_dropout": (16, "mc_dropout", 5.0, 2.8),
-    "p2igan_latent_comod": (16, "latent_style", 4.7, 4.2),
+    "p2igan_condition_comod": (16, "mc_dropout_condition", 4.7, 4.2),
 }
 
 
@@ -80,10 +80,8 @@ def _event(variant: str, event_seed: int, time_steps: int, size: int):
         "predictive_std": predictive_std[:, None], "member_mean": member_mean[:, :, None],
         "member_logvar": member_logvar[:, :, None], "ensemble": np.asarray(ensemble)[:, :, None],
     }
-    if secondary_kind in {"between_decoder", "mc_dropout"}:
+    if secondary_kind in {"between_decoder", "mc_dropout", "mc_dropout_condition"}:
         arrays["epistemic_std"] = arrays["secondary_std"]
-    elif secondary_kind == "latent_style":
-        arrays["style_std"] = arrays["secondary_std"]
     else:
         arrays["proxy_secondary_std"] = arrays["secondary_std"]
     return arrays, secondary_kind

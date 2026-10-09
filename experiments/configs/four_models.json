@@ -18,7 +18,7 @@
       "model_variant": "p2igan_joint",
       "uncertainty_kind": "aleatoric",
       "secondary_kind": "none",
-      "loss_profile": "weighted_l1+gaussian_nll+field_gan+joint_gan",
+      "loss_profile": "gaussian_nll+temporal_kl+uncertainty_smoothness+field_gan",
       "expected_raw_members": 1
     },
     "M2-decoder-ensemble": {
@@ -28,7 +28,7 @@
       "model_variant": "p2igan_decoder_ensemble",
       "uncertainty_kind": "between_decoder",
       "secondary_kind": "between_decoder",
-      "loss_profile": "weighted_l1+member_nll+crps+field_gan",
+      "loss_profile": "poisson_member_nll+temporal_kl+uncertainty_smoothness+field_gan",
       "expected_raw_members": 4
     },
     "M3-mc-dropout": {
@@ -38,17 +38,17 @@
       "model_variant": "p2igan_mc_dropout",
       "uncertainty_kind": "mc_dropout",
       "secondary_kind": "mc_dropout",
-      "loss_profile": "weighted_l1+member_nll+field_gan",
+      "loss_profile": "member_nll+l2+temporal_kl+uncertainty_smoothness+field_gan",
       "expected_raw_members": 16
     },
-    "M4-latent-comod": {
-      "path": "inference/four_models/p2igan_latent_comod.zarr",
+    "M4-dropout-condition-comod": {
+      "path": "inference/four_models/p2igan_condition_comod.zarr",
       "calibration_path": null,
       "group": "in-domain",
-      "model_variant": "p2igan_latent_comod",
-      "uncertainty_kind": "latent_style",
-      "secondary_kind": "latent_style",
-      "loss_profile": "weighted_l1+mixture_nll+multiscale_energy+field_gan",
+      "model_variant": "p2igan_condition_comod",
+      "uncertainty_kind": "mc_dropout_condition",
+      "secondary_kind": "mc_dropout_condition",
+      "loss_profile": "member_nll+l2+temporal_kl+uncertainty_smoothness+condition_experts+field_gan",
       "expected_raw_members": 16
     }
   }

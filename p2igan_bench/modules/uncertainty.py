@@ -7,23 +7,6 @@ from typing import Dict
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
-
-
-def heteroscedastic_gaussian_nll(
-    prediction: torch.Tensor,
-    target: torch.Tensor,
-    logvar: torch.Tensor,
-    *,
-    beta: float = 0.0,
-    eps: float = 1e-6,
-) -> torch.Tensor:
-    """Gaussian NLL with predicted per-pixel log-variance."""
-    variance = torch.exp(logvar).clamp_min(eps)
-    loss = 0.5 * (((target - prediction) ** 2) / variance + torch.log(variance))
-    if beta > 0.0:
-        loss = (variance.detach() ** beta) * loss
-    return loss.mean()
 
 
 def member_gaussian_nll(
@@ -33,7 +16,37 @@ def member_gaussian_nll(
     *,
     beta: float = 0.0,
 ) -> torch.Tensor:
-    """Mean Gaussian NLL over explicit model members ``[S,B,...]``."""
+    r"""Mean Gaussian NLL over explicit model members ``[S,B,...]``.
+
+    Let :math:`s\in\{1,\ldots,S\}` index members and :math:`i` index all
+    batch/spatio-temporal elements. With member mean :math:`\mu_{s,i}` and
+    predicted log-variance :math:`\ell_{s,i}`,
+
+    .. math::
+
+        \tilde\sigma_{s,i}^2
+        = \max\!\left(\exp(\ell_{s,i}), 10^{-6}\right),
+
+    .. math::
+
+        L_{s,i} = \frac{1}{2}\left[
+            \frac{(y_i-\mu_{s,i})^2}{\tilde\sigma_{s,i}^2}
+            + \ell_{s,i}
+        \right].
+
+    The returned scalar is
+
+    .. math::
+
+        \mathcal L = \frac{1}{SN}\sum_{s=1}^{S}\sum_{i=1}^{N}
+        \begin{cases}
+        \operatorname{stopgrad}\!\left[(\tilde\sigma_{s,i}^2)^\beta\right]
+            L_{s,i}, & \beta>0,\\
+        L_{s,i}, & \beta=0.
+        \end{cases}
+
+    The constant :math:`\tfrac12\log(2\pi)` is omitted.
+    """
     member_mean = member_mean.float()
     member_logvar = member_logvar.float()
     target = target.float().unsqueeze(0)
@@ -42,60 +55,6 @@ def member_gaussian_nll(
     if beta > 0.0:
         loss = variance.detach().pow(beta) * loss
     return loss.mean()
-
-
-def gaussian_mixture_nll(
-    member_mean: torch.Tensor,
-    target: torch.Tensor,
-    member_logvar: torch.Tensor,
-) -> torch.Tensor:
-    """Proper NLL for the equally weighted Gaussian mixture produced by M4."""
-    member_mean = member_mean.float()
-    member_logvar = member_logvar.float()
-    target = target.float().unsqueeze(0)
-    log_prob = -0.5 * (
-        (target - member_mean).square() * torch.exp(-member_logvar)
-        + member_logvar
-        + math.log(2.0 * math.pi)
-    )
-    return -(torch.logsumexp(log_prob, dim=0) - math.log(member_mean.shape[0])).mean()
-
-
-def ensemble_crps_loss(samples: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
-    """Differentiable empirical CRPS for ensemble samples ``[S,B,...]``."""
-    samples, target = samples.float(), target.float()
-    accuracy = (samples - target.unsqueeze(0)).abs().mean()
-    pairwise = (samples[:, None] - samples[None, :]).abs().mean()
-    return accuracy - 0.5 * pairwise
-
-
-def multiscale_energy_score(
-    samples: torch.Tensor,
-    target: torch.Tensor,
-    *,
-    pool_sizes: tuple[int, ...] = (1, 4, 8),
-) -> torch.Tensor:
-    """Multivariate proper score preserving spatial dependence at several scales."""
-    samples, target = samples.float(), target.float()
-    s, b, t, c, h, w = samples.shape
-    total = samples.new_zeros(())
-    valid_scales = 0
-    for pool in pool_sizes:
-        if pool > min(h, w):
-            continue
-        if pool > 1:
-            xs = F.avg_pool2d(samples.reshape(s * b * t, c, h, w), pool, pool)
-            ys = F.avg_pool2d(target.reshape(b * t, c, h, w), pool, pool)
-            xs = xs.reshape(s, b, -1)
-            ys = ys.reshape(b, -1)
-        else:
-            xs, ys = samples.reshape(s, b, -1), target.reshape(b, -1)
-        norm = math.sqrt(xs.shape[-1])
-        accuracy = torch.linalg.vector_norm(xs - ys.unsqueeze(0), dim=-1).mean() / norm
-        spread = torch.linalg.vector_norm(xs[:, None] - xs[None, :], dim=-1).mean() / norm
-        total = total + accuracy - 0.5 * spread
-        valid_scales += 1
-    return total / max(1, valid_scales)
 
 
 def summarize_uncertainty(raw_samples: torch.Tensor, *, eps: float = 1e-6) -> Dict[str, torch.Tensor]:
@@ -120,32 +79,6 @@ def summarize_uncertainty(raw_samples: torch.Tensor, *, eps: float = 1e-6) -> Di
         "epistemic_std": torch.sqrt(epistemic_var.clamp_min(0.0)),
         "predictive_std": torch.sqrt(predictive_var),
     }
-
-
-def kl_weight_equal(num_batches: int, **_: int) -> float:
-    return 1.0 / max(1, num_batches)
-
-
-def kl_weight_epoch(num_batches: int, current_epoch: int, epochs_at_start: int = 0, **_: int) -> float:
-    return (1.0 / max(1, num_batches)) * (1.0 / (2.0 ** (current_epoch + epochs_at_start)))
-
-
-def kl_weight_blundell(num_batches: int, batch_idx: int, **_: int) -> float:
-    try:
-        return 2 ** (num_batches - batch_idx - 1) / (2 ** num_batches - 1)
-    except OverflowError:
-        return 0.0
-
-
-def match_kl_weight(name: str):
-    normalized = str(name).lower()
-    if normalized == "equal":
-        return kl_weight_equal
-    if normalized == "epoch":
-        return kl_weight_epoch
-    if normalized == "blundell":
-        return kl_weight_blundell
-    raise ValueError(f"Unknown KL weighting scheme: {name}")
 
 
 def _power_spectrum_2d(field: torch.Tensor, eps: float = 1e-6) -> torch.Tensor:

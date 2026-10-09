@@ -1,0 +1,19 @@
+{
+  "extends": "uncertainty_common.json",
+  "save_dir": "weights/stable_residual_v1/p2igan_condition_comod_temporal",
+  "model": {
+    "name": "p2igan_condition_comod",
+    "mc_dropout_rate": 0.10,
+    "num_modulation_experts": 16,
+    "condition_embedding_dim": 32,
+    "condition_grid_size": 4,
+    "comod_scale": 0.10
+  },
+  "uncertainty": {"train_samples": 8, "val_samples": 8, "predict_samples": 16},
+  "train": {
+    "batch_size": 6,
+    "accumulate_steps": 1,
+    "optimizer": {"weight_decay": 0.00001}
+  },
+  "mlflow": {"experiment_name": "p2igan-five-model-uncertainty", "run_name": "M4-dropout-condition-comod"}
+}

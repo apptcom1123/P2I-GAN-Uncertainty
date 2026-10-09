@@ -10,16 +10,20 @@ import mlflow
 from mlflow.tracking import MlflowClient
 
 
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_TRACKING_URI = f"sqlite:///{PROJECT_ROOT / 'mlflow.db'}"
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--tracking-uri",
-        default=f"file:{Path('mlruns').resolve()}",
-        help="MLflow tracking URI (defaults to this repository's mlruns directory)",
+        default=DEFAULT_TRACKING_URI,
+        help="MLflow tracking URI (defaults to the repository SQLite database)",
     )
     parser.add_argument(
         "--experiment-name",
-        default="p2igan-four-model-uncertainty",
+        default="p2igan-five-model-uncertainty",
     )
     parser.add_argument(
         "--older-than-hours",

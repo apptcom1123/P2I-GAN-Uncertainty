@@ -1,79 +1,21 @@
-"""Advanced loss functions for precipitation GAN benchmarking."""
+"""Loss functions used by the P2I uncertainty trainers."""
 
 from __future__ import annotations
 
+import math
 from typing import Dict, Tuple
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torchmetrics import Metric
-import math
 
 __all__ = [
-    "ReconstructionLoss",
     "gan_loss",
     "pm_loss",
-    "transform",
-    "weighted_l1_distance",
-    "softmax_temperature",
-    "kl_divergence",
     "compute_forward_difference",
-    "spatial_pool",
-    "temporal_difference_matching_loss",
-    "shock_map",
-    "shock_map_loss",
-    "k1_loss",
+    "temporal_difference_kl_loss",
     "AdversarialLoss",
-    "WeightedL1Metric",
-    "K1LossMetric",
-    "ShockDifferenceMetric",
 ]
-
-
-class ReconstructionLoss:
-    """Weighted reconstruction loss: pixel pool + temporal regularization."""
-
-    def __init__(self, k1_alpha: float = 0.0, use_pm: bool = False, pm_weight: float = 10.0):
-        self.k1_alpha = k1_alpha
-        self.use_pm = use_pm
-        self.pm_weight = pm_weight
-
-    def __call__(self, prediction: torch.Tensor, target: torch.Tensor, mask: torch.Tensor | None = None):
-        # 主體使用 weighted L1；mask 參數保留以維持呼叫介面，但不再分 hole/valid。
-        pool_loss = weighted_l1_distance(prediction, target)
-        pred_diff = compute_forward_difference(prediction)
-        true_diff = compute_forward_difference(target)
-        pred_prob = softmax_temperature(pred_diff, 0.1)
-        true_prob = softmax_temperature(true_diff, 0.1)
-        reg_loss = kl_divergence(pred_prob, true_prob)
-        pm_term = torch.tensor(0.0, device=prediction.device, dtype=prediction.dtype)
-        if self.use_pm:
-            pm_term = pm_loss(prediction, target, omega=self.pm_weight)
-
-        loss = pool_loss + self.k1_alpha * reg_loss + pm_term
-        return loss, {
-            "pool": float(pool_loss.detach()),
-            "reg": float(reg_loss.detach()),
-            "pm": float(pm_term.detach()),
-        }
-
-
-def transform(x: torch.Tensor) -> torch.Tensor:
-    """Convert normalized rainfall back to mm scale (legacy helper)."""
-    return 0.036 * torch.pow(10, (x * 255.0 / 3.0) * 0.0625)
-
-
-def weighted_l1_distance(x_pred: torch.Tensor, x_true: torch.Tensor) -> torch.Tensor:
-    """Weighted L1 distance from NowcastNet paper."""
-    a, b, c = 0.50, 5.14, 0.12
-    x_max = 0.70
-
-    x_max_tensor = torch.tensor(x_max, device=x_true.device, dtype=x_true.dtype)
-    w_max = a * torch.exp(b * x_max_tensor) + c
-    w = a * torch.exp(b * x_true) + c
-    weight = torch.where(x_true > x_max_tensor, w_max, w)
-    return torch.mean(weight * torch.abs(x_pred - x_true))
 
 
 def pm_loss(pred: torch.Tensor, target: torch.Tensor, omega: float = 10.0) -> torch.Tensor:
@@ -94,7 +36,8 @@ def pm_loss(pred: torch.Tensor, target: torch.Tensor, omega: float = 10.0) -> to
 
     return omega * l_pm
 
-def softmax_temperature(tensor: torch.Tensor, temperature: float) -> torch.Tensor:
+
+def _softmax_temperature(tensor: torch.Tensor, temperature: float) -> torch.Tensor:
     """Apply temperature-scaled softmax over flattened spatial dims."""
     size = tensor.size()
     tensor = tensor.view(size[0], size[1], -1)
@@ -102,11 +45,13 @@ def softmax_temperature(tensor: torch.Tensor, temperature: float) -> torch.Tenso
     return softmax.view(size)
 
 
-def kl_divergence(p: torch.Tensor, q: torch.Tensor) -> torch.Tensor:
+def _kl_divergence(p: torch.Tensor, q: torch.Tensor) -> torch.Tensor:
     """KL divergence between temporal difference distributions."""
     p = p.view(p.size(0), p.size(1), -1)
     q = q.view(q.size(0), q.size(1), -1)
-    return F.kl_div(p.log(), q, reduction="batchmean")
+    return F.kl_div(
+        p.clamp_min(1e-8).log(), q, reduction="batchmean"
+    ).clamp_min(0.0)
 
 
 def compute_forward_difference(series: torch.Tensor) -> torch.Tensor:
@@ -114,108 +59,24 @@ def compute_forward_difference(series: torch.Tensor) -> torch.Tensor:
     return series[:, 1:] - series[:, :-1]
 
 
-def spatial_pool(x: torch.Tensor) -> torch.Tensor:
-    """Down-sample spatially to reduce pixel-level sensitivity."""
-    pool = nn.MaxPool2d(kernel_size=5, stride=4, padding=2)
-    return pool(x)
-
-
-def temporal_difference_matching_loss(
-    pred_diff: torch.Tensor,
-    true_diff: torch.Tensor,
-    true: torch.Tensor,
-    beta: float = 1.0,
-    eps: float = 1e-6,
+def temporal_difference_kl_loss(
+    prediction: torch.Tensor,
+    target: torch.Tensor,
+    temperature: float = 0.1,
 ) -> torch.Tensor:
-    """Weighted matching of temporal gradients."""
-    pred_diff_pool = spatial_pool(pred_diff)
-    true_diff_pool = spatial_pool(true_diff)
-    base = spatial_pool(true[:, :-1])
-    weight = 1.0 / (1.0 + beta * base + eps)
+    """KL matching between predicted and target temporal-change maps.
 
-    loss = (pred_diff_pool - true_diff_pool) ** 2
-    weighted_loss = loss * weight
-    return weighted_loss.mean()
-
-
-def _kernels(dtype: torch.dtype, device: torch.device):
-    kx = torch.tensor(
-        [[1, 0, -1], [2, 0, -2], [1, 0, -1]], dtype=dtype, device=device
-    ).view(1, 1, 3, 3) / 8
-    ky = kx.transpose(-1, -2).contiguous()
-    kl = torch.tensor(
-        [[0, 1, 0], [1, -4, 1], [0, 1, 0]], dtype=dtype, device=device
-    ).view(1, 1, 3, 3)
-    return kx, ky, kl
-
-
-def _conv_reflect(x4: torch.Tensor, kernel: torch.Tensor) -> torch.Tensor:
-    x4 = F.pad(x4, (1, 1, 1, 1), mode="reflect")
-    return F.conv2d(x4, kernel, padding=0)
-
-
-def shock_map(x: torch.Tensor, beta: float = 30.0, eps: float = 1e-12) -> torch.Tensor:
-    """Compute shock map for structural difference regularization."""
-    batch, frames, height, width = x.shape
-    x4 = x.reshape(batch * frames, 1, height, width)
-    kx, ky, kl = _kernels(x4.dtype, x4.device)
-    gx = _conv_reflect(x4, kx)
-    gy = _conv_reflect(x4, ky)
-    grad = torch.sqrt(gx * gx + gy * gy + eps)
-    lap = _conv_reflect(x4, kl)
-    return (torch.tanh(beta * lap) * grad).reshape(batch, frames, height, width)
-
-
-def shock_map_loss(
-    pred: torch.Tensor,
-    true: torch.Tensor,
-    beta: float = 30.0,
-    tau: float = 25.0,
-    border_ignore: int = 0,
-    pool: int = 2,
-    eps: float = 1e-12,
-) -> torch.Tensor:
-    del tau  # legacy arg retained for compatibility
-    if pool > 1:
-        pred = F.max_pool2d(pred, kernel_size=pool, stride=pool)
-        true = F.max_pool2d(true, kernel_size=pool, stride=pool)
-
-    shock_pred = shock_map(pred, beta, eps)
-    shock_true = shock_map(true, beta, eps)
-    diff = F.relu(torch.abs(shock_true) - torch.abs(shock_pred))
-
-    if border_ignore > 0:
-        m = border_ignore
-        diff = diff[..., m:-m, m:-m]
-
-    return diff
-
-
-def k1_loss(
-    pred: torch.Tensor,
-    true: torch.Tensor,
-    temp_alpha: float,
-    k1_alpha: float,
-) -> torch.Tensor:
-    """Full K1 loss combining weighted pool + KL + shock map terms."""
-    device = pred.device
-
-    pool_loss = weighted_l1_distance(pred, true)
-    reg_loss = torch.tensor(0.0, device=device)
-    shock_loss = torch.tensor(0.0, device=device)
-
-    if k1_alpha > 0:
-        pred_diff = compute_forward_difference(pred)
-        true_diff = compute_forward_difference(true)
-        pred_prob = softmax_temperature(pred_diff, 0.1)
-        true_prob = softmax_temperature(true_diff, 0.1)
-        reg_loss = kl_divergence(pred_prob, true_prob)
-
-    if temp_alpha == 0:
-        shock_diff = shock_map_loss(pred, true, beta=0.02, border_ignore=2, pool=1)
-        shock_loss = shock_diff.mean()
-
-    return pool_loss + k1_alpha * reg_loss + temp_alpha * shock_loss
+    Inputs use ``[B,T,...]``. The spatial/channel values of every temporal
+    difference are converted to a probability distribution before computing
+    ``KL(target || prediction)``.
+    """
+    prediction_probability = _softmax_temperature(
+        compute_forward_difference(prediction), temperature
+    )
+    target_probability = _softmax_temperature(
+        compute_forward_difference(target), temperature
+    )
+    return _kl_divergence(prediction_probability, target_probability)
 
 
 class AdversarialLoss(nn.Module):
@@ -280,60 +141,3 @@ def gan_loss(
         _GAN_LOSS_CACHE[key] = loss_fn  # cache moved module
 
     return loss_fn(logits, target_is_real, is_disc=is_disc)
-
-
-class _BaseLossMetric(Metric):
-    full_state_update = False
-
-    def __init__(self):
-        super().__init__()
-        self.add_state("loss_sum", default=torch.tensor(0.0), dist_reduce_fx="sum")
-        self.add_state("n_obs", default=torch.tensor(0.0), dist_reduce_fx="sum")
-
-    def _accumulate(self, loss: torch.Tensor) -> None:
-        self.loss_sum += loss.detach()
-        self.n_obs += torch.tensor(1.0, device=loss.device)
-
-    def compute(self) -> torch.Tensor:
-        return self.loss_sum / torch.clamp(self.n_obs, min=1.0)
-
-
-class WeightedL1Metric(_BaseLossMetric):
-    """TorchMetrics wrapper for weighted L1 distance."""
-
-    def update(self, preds: torch.Tensor, target: torch.Tensor) -> None:
-        loss = weighted_l1_distance(preds, target)
-        self._accumulate(loss)
-
-
-class K1LossMetric(_BaseLossMetric):
-    """TorchMetrics wrapper for k1 loss."""
-
-    def __init__(self, temp_alpha: float = 1.0, k1_alpha: float = 0.0):
-        super().__init__()
-        self.temp_alpha = temp_alpha
-        self.k1_alpha = k1_alpha
-
-    def update(self, preds: torch.Tensor, target: torch.Tensor) -> None:
-        loss = k1_loss(preds, target, self.temp_alpha, self.k1_alpha)
-        self._accumulate(loss)
-
-
-class ShockDifferenceMetric(_BaseLossMetric):
-    """Logs mean shock-map discrepancy."""
-
-    def __init__(self, beta: float = 0.02, border_ignore: int = 2, pool: int = 1):
-        super().__init__()
-        self.beta = beta
-        self.border_ignore = border_ignore
-        self.pool = pool
-
-    def update(self, preds: torch.Tensor, target: torch.Tensor) -> None:
-        diff = shock_map_loss(
-            preds,
-            target,
-            beta=self.beta,
-            border_ignore=self.border_ignore,
-            pool=self.pool,
-        )
-        self._accumulate(diff.mean())

@@ -21,7 +21,7 @@ from p2igan_bench.modules import enable_mc_dropout, generate_correlated_noise
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Infer one or all four P2I uncertainty models")
+    parser = argparse.ArgumentParser(description="Infer one or more P2I uncertainty models")
     parser.add_argument("--config", type=Path, nargs="+", required=True, help="One or more model config files")
     parser.add_argument("--checkpoint", type=Path, default=None, help="Only valid with one config")
     parser.add_argument("--model-dir", type=Path, default=None, help="Only valid with one config")
@@ -112,7 +112,7 @@ class UncertaintyInterpolationPredictor:
             )
         self.network.load_state_dict(state["network"])
         self.network.eval()
-        if self.variant == "p2igan_mc_dropout":
+        if self.variant in {"p2igan_mc_dropout", "p2igan_condition_comod"}:
             enable_mc_dropout(self.network)
         unc = cfg.get("uncertainty", {})
         data = cfg.get("data_loader") or cfg["data"]["train"]
@@ -123,19 +123,28 @@ class UncertaintyInterpolationPredictor:
         self.correlated = bool(noise.get("enabled", True))
         self.temporal_mode = str(noise.get("temporal_mode", "per_frame"))
 
-    def _forward(self, masked, masks, count, z=None) -> UncertaintyOutput:
-        members = count if self.variant in {"p2igan_mc_dropout", "p2igan_latent_comod"} else 1
+    def _forward(self, masked, masks, count, sample_seeds=None) -> UncertaintyOutput:
+        members = count if self.variant in {
+            "p2igan_bnn_joint", "p2igan_mc_dropout", "p2igan_condition_comod"
+        } else 1
         with torch.no_grad():
-            return self.network(masked, masks, num_members=members, z=z)
+            return self.network(
+                masked,
+                masks,
+                num_members=members,
+                sample_seeds=sample_seeds,
+            )
 
     def predict_event(self, target, masked, masks, predict_samples, ensemble_size, overlap):
         event_len, step = target.shape[1], max(1, self.window - overlap)
         member_sum = logvar_sum = None
-        # Reuse each latent scenario across all windows of an event so M4 members stay coherent.
-        event_z = None
-        if self.variant == "p2igan_latent_comod":
-            event_z = torch.randn(predict_samples, target.shape[0], self.network.latent_dim,
-                                  device=self.device, dtype=target.dtype)
+        event_sample_seeds = None
+        if self.variant in {
+            "p2igan_bnn_joint", "p2igan_mc_dropout", "p2igan_condition_comod"
+        }:
+            event_sample_seeds = torch.randint(
+                0, 2 ** 31 - 1, (predict_samples,), device="cpu"
+            )
         counts = torch.zeros((event_len, 1, 1, 1), device=self.device, dtype=target.dtype)
         for start in range(0, event_len, step):
             stop, valid = start + self.window, min(self.window, event_len - start)
@@ -144,7 +153,12 @@ class UncertaintyInterpolationPredictor:
                 pad = self.window - valid
                 current_masked = torch.cat([current_masked, current_masked[:, -1:].repeat(1, pad, 1, 1, 1)], dim=1)
                 current_masks = torch.cat([current_masks, current_masks[:, -1:].repeat(1, pad, 1, 1, 1)], dim=1)
-            out = self._forward(current_masked, current_masks, predict_samples, z=event_z)
+            out = self._forward(
+                current_masked,
+                current_masks,
+                predict_samples,
+                sample_seeds=event_sample_seeds,
+            )
             current_mean = out.member_mean[:, 0, :valid]
             current_logvar = out.member_logvar[:, 0, :valid]
             if member_sum is None:
@@ -174,7 +188,10 @@ class UncertaintyInterpolationPredictor:
             ensemble = masks[0].unsqueeze(0) * masked[0].unsqueeze(0) + (1 - masks[0].unsqueeze(0)) * ensemble
         else:
             ensemble = members.new_empty((0, *mean.shape))
-        secondary_name = "epistemic_std" if self.variant in {"p2igan_decoder_ensemble", "p2igan_mc_dropout"} else "style_std" if self.variant == "p2igan_latent_comod" else "proxy_secondary_std"
+        secondary_name = "epistemic_std" if self.variant in {
+            "p2igan_bnn_joint", "p2igan_decoder_ensemble", "p2igan_mc_dropout",
+            "p2igan_condition_comod",
+        } else "proxy_secondary_std"
         result = {
             "target": target[0], "masked_input": masked[0], "mask": masks[0], "mean": mean,
             "aleatoric_std": aleatoric_var.clamp_min(1e-6).sqrt(),

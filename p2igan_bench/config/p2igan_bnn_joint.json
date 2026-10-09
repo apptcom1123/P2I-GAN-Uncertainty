@@ -1,0 +1,34 @@
+{
+  "extends": "uncertainty_common.json",
+  "save_dir": "weights/stable_residual_v1/p2igan_bnn_joint_temporal",
+  "model": {
+    "name": "p2igan_bnn_joint",
+    "mc_dropout_rate": 0.0,
+    "pretrained_joint_checkpoint": null,
+    "prior_scale": 0.10,
+    "posterior_init_scale": 0.005
+  },
+  "discriminator": {
+    "field_enabled": false
+  },
+  "loss": {
+    "beta": 0.0,
+    "lambda_kl": 1.0,
+    "kl_warmup_epochs": 20,
+    "lambda_adv_field": 0.0
+  },
+  "uncertainty": {
+    "train_samples": 4,
+    "val_samples": 8,
+    "predict_samples": 16
+  },
+  "train": {
+    "batch_size": 16,
+    "accumulate_steps": 1,
+    "optimizer": {"lr": 0.00002}
+  },
+  "mlflow": {
+    "experiment_name": "p2igan-five-model-uncertainty",
+    "run_name": "M5-bnn-joint-elbo"
+  }
+}

@@ -1,6 +1,7 @@
 """Training utilities (losses, helpers)."""
 
-from .losses import ReconstructionLoss, gan_loss
+from .bayesian import BayesianConv2d, bayesian_kl_divergence, sampled_bayesian_weights
+from .losses import gan_loss, temporal_difference_kl_loss
 from .monitoring import (
     ActivationMonitor,
     QUALITY_METRIC_KEYS,
@@ -14,18 +15,16 @@ from .uncertainty import (
     enable_mc_dropout,
     generate_correlated_noise,
     generate_ensemble_from_uncertainty,
-    gaussian_mixture_nll,
-    heteroscedastic_gaussian_nll,
     member_gaussian_nll,
-    ensemble_crps_loss,
-    multiscale_energy_score,
-    match_kl_weight,
     summarize_uncertainty,
 )
 
 __all__ = [
-    "ReconstructionLoss",
     "gan_loss",
+    "temporal_difference_kl_loss",
+    "BayesianConv2d",
+    "bayesian_kl_divergence",
+    "sampled_bayesian_weights",
     "ActivationMonitor",
     "QUALITY_METRIC_KEYS",
     "calibration_figure",
@@ -36,11 +35,6 @@ __all__ = [
     "enable_mc_dropout",
     "generate_correlated_noise",
     "generate_ensemble_from_uncertainty",
-    "gaussian_mixture_nll",
-    "heteroscedastic_gaussian_nll",
     "member_gaussian_nll",
-    "ensemble_crps_loss",
-    "multiscale_energy_score",
-    "match_kl_weight",
     "summarize_uncertainty",
 ]

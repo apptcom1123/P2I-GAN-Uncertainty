@@ -18,6 +18,9 @@ dist/
 .uv-cache/
 .ipynb_checkpoints
 mlruns/
+mlflow.db
+mlflow.db-*
+mlartifacts/
 experiments/results/
 experiments/fake_outputs/
 *.log

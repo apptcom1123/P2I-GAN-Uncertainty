@@ -86,7 +86,7 @@ class EvaluationSmokeTest(unittest.TestCase):
             "M1": ("p2igan_joint", 1, "aleatoric"),
             "M2": ("p2igan_decoder_ensemble", 4, "between_decoder"),
             "M3": ("p2igan_mc_dropout", 16, "mc_dropout"),
-            "M4": ("p2igan_latent_comod", 16, "latent_style"),
+            "M4": ("p2igan_condition_comod", 16, "mc_dropout_condition"),
         }
         stores, methods = {}, {}
         for name, (variant, members, kind) in variants.items():

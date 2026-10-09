@@ -4,7 +4,7 @@ The experiments evaluate the Zarr format written by `scripts/infer.py`. Each
 event must contain `target`, `mask`, `mean`, `predictive_std`, and may also
 contain `aleatoric_std`, `secondary_std`, `masked_input`, raw `member_mean`,
 raw `member_logvar`, and `ensemble`. `epistemic_std` is retained as a semantic
-alias only for decoder-ensemble and MC-dropout stores; M4 uses `style_std`.
+alias for decoder-ensemble, MC-dropout, and condition-routed MC-dropout stores.
 
 ## Design
 
@@ -34,7 +34,7 @@ python scripts/infer.py \
     p2igan_bench/config/p2igan_joint.json \
     p2igan_bench/config/p2igan_decoder_ensemble.json \
     p2igan_bench/config/p2igan_mc_dropout.json \
-    p2igan_bench/config/p2igan_latent_comod.json \
+    p2igan_bench/config/p2igan_condition_comod.json \
   --output-dir inference/four_models \
   --overwrite
 ```

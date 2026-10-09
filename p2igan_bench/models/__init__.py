@@ -6,9 +6,10 @@ import torch.nn as nn
 
 from .p2igan import P2IDiscriminator
 from .p2igan_uncertainty import (
+    P2IBNNJointGenerator,
     P2IDecoderEnsembleGenerator,
     P2IJointGenerator,
-    P2ILatentCoModGenerator,
+    P2IConditionCoModGenerator,
     P2IMCDropoutGenerator,
     UncertaintyOutput,
 )
@@ -19,15 +20,17 @@ def build_generator(cfg: Dict[str, Any]) -> nn.Module:
     model_name = str(model_cfg.get("name", "")).lower()
     if model_name == "p2igan_joint":
         return P2IJointGenerator(cfg)
+    if model_name == "p2igan_bnn_joint":
+        return P2IBNNJointGenerator(cfg)
     if model_name == "p2igan_decoder_ensemble":
         return P2IDecoderEnsembleGenerator(cfg)
     if model_name == "p2igan_mc_dropout":
         return P2IMCDropoutGenerator(cfg)
-    if model_name == "p2igan_latent_comod":
-        return P2ILatentCoModGenerator(cfg)
+    if model_name == "p2igan_condition_comod":
+        return P2IConditionCoModGenerator(cfg)
     supported = (
-        "p2igan_joint", "p2igan_decoder_ensemble",
-        "p2igan_mc_dropout", "p2igan_latent_comod",
+        "p2igan_joint", "p2igan_bnn_joint", "p2igan_decoder_ensemble",
+        "p2igan_mc_dropout", "p2igan_condition_comod",
     )
     raise ValueError(f"Unsupported model.name={model_name!r}; choose one of {supported}")
 
@@ -40,8 +43,8 @@ def build_discriminator(cfg: Dict[str, Any]) -> nn.Module:
     init_weights = bool(discriminator_cfg.get("init_weights", True))
 
     if model_name in {
-        "p2igan_joint", "p2igan_decoder_ensemble",
-        "p2igan_mc_dropout", "p2igan_latent_comod",
+        "p2igan_joint", "p2igan_bnn_joint", "p2igan_decoder_ensemble",
+        "p2igan_mc_dropout", "p2igan_condition_comod",
     }:
         data_cfg = cfg.get("data_loader") or cfg.get("data", {}).get("train", {})
         sample_length = int(discriminator_cfg.get("sample_length", data_cfg.get("sample_length", 16)))
@@ -53,8 +56,8 @@ def build_discriminator(cfg: Dict[str, Any]) -> nn.Module:
             init_weights=init_weights,
         )
     supported = (
-        "p2igan_joint", "p2igan_decoder_ensemble",
-        "p2igan_mc_dropout", "p2igan_latent_comod",
+        "p2igan_joint", "p2igan_bnn_joint", "p2igan_decoder_ensemble",
+        "p2igan_mc_dropout", "p2igan_condition_comod",
     )
     raise ValueError(f"Unsupported discriminator/model name={model_name!r}; choose one of {supported}")
 
@@ -62,10 +65,11 @@ def build_discriminator(cfg: Dict[str, Any]) -> nn.Module:
 __all__ = [
     "build_generator",
     "build_discriminator",
+    "P2IBNNJointGenerator",
     "P2IJointGenerator",
     "P2IDecoderEnsembleGenerator",
     "P2IMCDropoutGenerator",
-    "P2ILatentCoModGenerator",
+    "P2IConditionCoModGenerator",
     "UncertaintyOutput",
     "P2IDiscriminator",
 ]

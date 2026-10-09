@@ -16,13 +16,10 @@
     "num_res": 4,
     "stack_version": "stable_residual_v1",
     "residual_scale": 0.1,
-    "residual_norm_groups": 8,
-    "output_activation": "sigmoid",
-    "preserve_observations": true
+    "residual_norm_groups": 8
   },
   "discriminator": {
-    "field_enabled": true,
-    "joint_enabled": false
+    "field_enabled": true
   },
   "data": {
     "train": {
@@ -58,22 +55,14 @@
   },
   "loss": {
     "beta": 0.0,
-    "lambda_w": 1.0,
-    "lambda_pm": 0.01,
+    "k1_weight": 0.0005,
+    "lambda_uncertainty_temporal": 0.0005,
+    "lambda_pm": 0.0,
     "pm_omega": 10.0,
     "lambda_adv_field": 0.01,
-    "lambda_adv_joint": 0.0,
-    "lambda_crps": 0.0,
-    "lambda_energy": 0.0,
-    "lambda_uncertainty_temporal": 0.0,
     "gan_loss": "hinge",
     "logvar_clamp_min": -10.0,
     "logvar_clamp_max": 8.0
-  },
-  "schedule": {
-    "distribution_start": 0.10,
-    "adversarial_start": 0.40,
-    "variant_start": 0.70
   },
   "uncertainty": {
     "train_samples": 4,
@@ -110,5 +99,9 @@
     "max_activation_abs": 1000.0,
     "log_checkpoint_artifact": true
   },
-  "mlflow": {"enabled": true, "tracking_uri": null}
+  "mlflow": {
+    "enabled": true,
+    "tracking_uri": "sqlite:///mlflow.db",
+    "artifact_root": "mlartifacts"
+  }
 }
